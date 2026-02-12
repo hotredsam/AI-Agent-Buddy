@@ -257,6 +257,14 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  // Import file from buffer (drag-and-drop with contextIsolation)
+  ipcMain.handle(
+    'files:importByBuffer',
+    async (_event: IpcMainInvokeEvent, fileName: string, buffer: ArrayBuffer): Promise<store.UserFile | null> => {
+      return store.importUserFileFromBuffer(fileName, Buffer.from(buffer))
+    }
+  )
+
   // --- Cloud Checkpoint ---
 
   ipcMain.handle('checkpoint:generate', async (): Promise<string> => {

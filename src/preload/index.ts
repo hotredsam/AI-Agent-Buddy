@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listFiles: () => ipcRenderer.invoke('files:list'),
   importFile: () => ipcRenderer.invoke('files:import'),
   importFileByPath: (filePath: string) => ipcRenderer.invoke('files:importByPath', filePath),
+  importFileByBuffer: (fileName: string, buffer: ArrayBuffer) =>
+    ipcRenderer.invoke('files:importByBuffer', fileName, buffer),
   deleteFile: (fileName: string) => ipcRenderer.invoke('files:delete', fileName),
   openFilesFolder: () => ipcRenderer.invoke('files:openFolder'),
 

@@ -7,6 +7,8 @@ interface SidebarProps {
   conversations: Conversation[]
   activeConversationId: string | null
   view: View
+  collapsed: boolean
+  onToggleCollapse: () => void
   onSelectConversation: (id: string) => void
   onNewChat: () => void
   onDeleteConversation: (id: string) => void
@@ -34,6 +36,8 @@ export default function Sidebar({
   conversations,
   activeConversationId,
   view,
+  collapsed,
+  onToggleCollapse,
   onSelectConversation,
   onNewChat,
   onDeleteConversation,
@@ -79,10 +83,77 @@ export default function Sidebar({
     }
   }
 
+  // Collapsed sidebar: just icons
+  if (collapsed) {
+    return (
+      <div className="sidebar collapsed">
+        <div className="sidebar-header">
+          <button
+            className="sidebar-hamburger"
+            onClick={onToggleCollapse}
+            title="Expand sidebar"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16">
+              <rect y="2" width="16" height="1.5" rx="0.75" fill="currentColor" />
+              <rect y="7.25" width="16" height="1.5" rx="0.75" fill="currentColor" />
+              <rect y="12.5" width="16" height="1.5" rx="0.75" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+        <div className="sidebar-nav">
+          <button
+            className={`sidebar-nav-btn ${view === 'chat' ? 'active' : ''}`}
+            onClick={() => onChangeView('chat')}
+            title="Chat"
+          >
+            {'\u{1F4AC}'}
+          </button>
+          <button
+            className={`sidebar-nav-btn ${view === 'settings' ? 'active' : ''}`}
+            onClick={() => onChangeView('settings')}
+            title="Settings"
+          >
+            &#x2699;
+          </button>
+          <button
+            className={`sidebar-nav-btn ${view === 'workspace' ? 'active' : ''}`}
+            onClick={() => onChangeView('workspace')}
+            title="Files"
+          >
+            &#x1F4C1;
+          </button>
+        </div>
+        <div style={{ flex: 1 }} />
+        <div className="sidebar-collapsed-new">
+          <button
+            className="sidebar-nav-btn"
+            onClick={onNewChat}
+            title="New Chat"
+          >
+            +
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <div className="sidebar-brand">AI Agent IDE</div>
+        <div className="sidebar-header-top">
+          <button
+            className="sidebar-hamburger"
+            onClick={onToggleCollapse}
+            title="Collapse sidebar"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16">
+              <rect y="2" width="16" height="1.5" rx="0.75" fill="currentColor" />
+              <rect y="7.25" width="16" height="1.5" rx="0.75" fill="currentColor" />
+              <rect y="12.5" width="16" height="1.5" rx="0.75" fill="currentColor" />
+            </svg>
+          </button>
+          <div className="sidebar-brand">AI Agent IDE</div>
+        </div>
         <button className="sidebar-new-chat-btn" onClick={onNewChat}>
           <span className="icon">+</span>
           <span>New Chat</span>

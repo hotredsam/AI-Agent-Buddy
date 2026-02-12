@@ -67,17 +67,24 @@ export default function WorkspacePane() {
 
     for (let i = 0; i < droppedFiles.length; i++) {
       const file = droppedFiles[i]
-      // Electron exposes the real path on the File object
-      const filePath = (file as any).path
-      if (filePath) {
-        try {
+      try {
+        // Try Electron's File.path first (works when sandbox: false + no contextIsolation quirks)
+        const filePath = (file as any).path
+        if (filePath) {
           const imported = await window.electronAPI.importFileByPath(filePath)
           if (imported) {
             setFiles(prev => [imported, ...prev.filter(f => f.name !== imported.name)])
+            continue
           }
-        } catch (err) {
-          console.error('Failed to import dropped file:', err)
         }
+        // Fallback: read file contents via FileReader API and send buffer over IPC
+        const buffer = await file.arrayBuffer()
+        const imported = await window.electronAPI.importFileByBuffer(file.name, buffer)
+        if (imported) {
+          setFiles(prev => [imported, ...prev.filter(f => f.name !== imported.name)])
+        }
+      } catch (err) {
+        console.error('Failed to import dropped file:', err)
       }
     }
   }
@@ -107,7 +114,7 @@ export default function WorkspacePane() {
         <div className={`files-empty ${dragOver ? 'drag-over' : ''}`}>
           <span className="files-empty-icon">{'\u{1F4C2}'}</span>
           <p>No files yet</p>
-          <span className="files-empty-sub">Click "Import" to add files to your library</span>
+          <span className="files-empty-sub">Drag files here or click "Import"</span>
         </div>
       ) : (
         <div className="files-list">

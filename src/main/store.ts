@@ -25,6 +25,7 @@ export interface Settings {
   modelName: string
   numCtx: number
   theme: string
+  apiKeys?: Record<string, string>
 }
 
 // --- Default Settings ---
@@ -325,4 +326,26 @@ export function deleteUserFile(fileName: string): boolean {
 export function getUserFilesPath(): string {
   ensureUserFilesDir()
   return getUserFilesDir()
+}
+
+/**
+ * Import a file from raw buffer data (used for drag-and-drop where File.path
+ * is not accessible due to contextIsolation).
+ */
+export function importUserFileFromBuffer(fileName: string, buffer: Buffer): UserFile | null {
+  ensureUserFilesDir()
+  const destPath = path.join(getUserFilesDir(), fileName)
+  try {
+    fs.writeFileSync(destPath, buffer)
+    const stats = fs.statSync(destPath)
+    return {
+      name: fileName,
+      path: destPath,
+      size: stats.size,
+      modifiedAt: stats.mtime.toISOString(),
+      type: path.extname(fileName).toLowerCase() || 'unknown',
+    }
+  } catch {
+    return null
+  }
 }

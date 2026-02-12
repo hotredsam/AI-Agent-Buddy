@@ -22,6 +22,7 @@ export interface Settings {
   modelName: string
   numCtx: number
   theme: ThemeName
+  apiKeys?: Record<string, string>
 }
 
 export interface UserFile {
@@ -63,6 +64,7 @@ export interface ElectronAPI {
   listFiles: () => Promise<UserFile[]>
   importFile: () => Promise<UserFile | null>
   importFileByPath: (filePath: string) => Promise<UserFile | null>
+  importFileByBuffer: (fileName: string, buffer: ArrayBuffer) => Promise<UserFile | null>
   deleteFile: (fileName: string) => Promise<boolean>
   openFilesFolder: () => Promise<void>
   windowMinimize: () => Promise<void>

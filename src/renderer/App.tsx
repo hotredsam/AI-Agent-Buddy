@@ -30,6 +30,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [view, setView] = useState<View>('chat')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // ---- Streaming state ----
   const [isStreaming, setIsStreaming] = useState(false)
@@ -270,6 +271,10 @@ export default function App() {
     setView(v)
   }, [])
 
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed(prev => !prev)
+  }, [])
+
   // ---- Keyboard shortcuts ----
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -293,6 +298,11 @@ export default function App() {
         e.preventDefault()
         setView('workspace')
       }
+      // Ctrl+B / Cmd+B: Toggle sidebar
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault()
+        setSidebarCollapsed(prev => !prev)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -311,6 +321,8 @@ export default function App() {
         conversations={conversations}
         activeConversationId={activeConversationId}
         view={view}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={handleToggleSidebar}
         onSelectConversation={handleSelectConversation}
         onNewChat={handleNewChat}
         onDeleteConversation={handleDeleteConversation}

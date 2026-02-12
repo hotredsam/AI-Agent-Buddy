@@ -7,12 +7,20 @@ interface SettingsPaneProps {
   onSave: (settings: Settings) => void
 }
 
+const API_PROVIDERS = [
+  { key: 'openai', label: 'OpenAI', placeholder: 'sk-...' },
+  { key: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-...' },
+  { key: 'google', label: 'Google AI', placeholder: 'AIza...' },
+  { key: 'groq', label: 'Groq', placeholder: 'gsk_...' },
+] as const
+
 export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   const [form, setForm] = useState<Settings>({ ...settings })
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown')
   const [testing, setTesting] = useState(false)
   const [saved, setSaved] = useState(false)
   const [checkpointCopied, setCheckpointCopied] = useState(false)
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
   const [diagResult, setDiagResult] = useState<{
     serverReachable: boolean
     availableModels: string[]
@@ -51,6 +59,20 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
       applyTheme(value as ThemeName)
       onSave(updated)
     }
+  }
+
+  const handleApiKeyChange = (provider: string, value: string) => {
+    const currentKeys = form.apiKeys || {}
+    const updatedKeys = { ...currentKeys, [provider]: value }
+    // Remove empty keys
+    if (!value.trim()) delete updatedKeys[provider]
+    const updated = { ...form, apiKeys: updatedKeys }
+    setForm(updated)
+    setSaved(false)
+  }
+
+  const toggleShowKey = (provider: string) => {
+    setShowKeys(prev => ({ ...prev, [provider]: !prev[provider] }))
   }
 
   const handleSave = () => {
@@ -168,6 +190,40 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             {saved ? 'Saved!' : 'Save'}
           </button>
         </div>
+      </div>
+
+      {/* API Keys card */}
+      <div className="settings-card api-keys-card">
+        <h2>API Keys</h2>
+        <span className="settings-field-hint" style={{ marginBottom: 16, display: 'block' }}>
+          Store API keys for cloud AI providers. Keys are saved locally and never transmitted except to the provider's API.
+        </span>
+        {API_PROVIDERS.map(({ key, label, placeholder }) => (
+          <div key={key} className="settings-field api-key-field">
+            <label htmlFor={`api-key-${key}`}>{label}</label>
+            <div className="api-key-input-row">
+              <input
+                id={`api-key-${key}`}
+                type={showKeys[key] ? 'text' : 'password'}
+                value={form.apiKeys?.[key] || ''}
+                onChange={(e) => handleApiKeyChange(key, e.target.value)}
+                placeholder={placeholder}
+                autoComplete="off"
+              />
+              <button
+                className="api-key-toggle"
+                onClick={() => toggleShowKey(key)}
+                title={showKeys[key] ? 'Hide key' : 'Show key'}
+                type="button"
+              >
+                {showKeys[key] ? '\u{1F441}' : '\u{1F512}'}
+              </button>
+            </div>
+            {form.apiKeys?.[key] && (
+              <span className="api-key-status connected">Key saved</span>
+            )}
+          </div>
+        ))}
       </div>
 
       {/* Info cards: horizontal row */}
