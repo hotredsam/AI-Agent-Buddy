@@ -1,176 +1,117 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-
-interface CommandResult {
-  stdout: string
-  stderr: string
-  exitCode: number
-}
-
-interface HistoryEntry {
-  command: string
-  stdout: string
-  stderr: string
-  exitCode: number
-  timestamp: string
-}
+import React, { useEffect, useRef, useCallback } from 'react'
+import { Terminal } from 'xterm'
+import { FitAddon } from 'xterm-addon-fit'
+import 'xterm/css/xterm.css'
 
 interface TerminalPaneProps {
-  onCommandResult?: (result: CommandResult) => void
+  cwd?: string
 }
 
-export default function TerminalPane({ onCommandResult }: TerminalPaneProps) {
-  const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [input, setInput] = useState('')
-  const [running, setRunning] = useState(false)
-  const [cwd, setCwd] = useState('')
-  const [lastCommand, setLastCommand] = useState('')
+export default function TerminalPane({ cwd }: TerminalPaneProps) {
+  const terminalRef = useRef<HTMLDivElement>(null)
+  const termInstance = useRef<Terminal | null>(null)
+  const fitAddon = useRef<FitAddon | null>(null)
+  const ptyIdRef = useRef<number | null>(null)
 
-  const outputRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const initTerminal = useCallback(async () => {
+    if (!terminalRef.current || termInstance.current) return
 
-  // Load current working directory on mount
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+      theme: {
+        background: '#0c0c14',
+        foreground: '#e8e8ec',
+        cursor: '#6eaaff',
+        selectionBackground: '#6eaaff30',
+        black: '#1c1c23',
+        red: '#ff6b7a',
+        green: '#63e6be',
+        yellow: '#ffd966',
+        blue: '#6eaaff',
+        magenta: '#d499ff',
+        cyan: '#70e0ff',
+        white: '#e8e8ec',
+      },
+      allowProposedApi: true,
+    })
+
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(terminalRef.current)
+    fit.fit()
+
+    termInstance.current = term
+    fitAddon.current = fit
+
+    // Spawn PTY
+    const ptyId = await window.electronAPI.terminalSpawn({
+      cwd: cwd || undefined,
+      cols: term.cols,
+      rows: term.rows,
+    })
+    ptyIdRef.current = ptyId
+
+    // Listen for data
+    const unsubData = window.electronAPI.onTerminalData(ptyId, (data) => {
+      term.write(data)
+    })
+
+    // Listen for exit
+    const unsubExit = window.electronAPI.onTerminalExit(ptyId, ({ exitCode }) => {
+      term.write(`\r\n[Process exited with code ${exitCode}]\r\n`)
+      ptyIdRef.current = null
+    })
+
+    // Handle user input
+    term.onData((data) => {
+      if (ptyIdRef.current !== null) {
+        window.electronAPI.terminalWrite(ptyIdRef.current, data)
+      }
+    })
+
+    // Handle resize
+    const resizeObserver = new ResizeObserver(() => {
+      fit.fit()
+      if (ptyIdRef.current !== null) {
+        window.electronAPI.terminalResize(ptyIdRef.current, term.cols, term.rows)
+      }
+    })
+    resizeObserver.observe(terminalRef.current)
+
+    return () => {
+      unsubData()
+      unsubExit()
+      resizeObserver.disconnect()
+      if (ptyIdRef.current !== null) {
+        window.electronAPI.terminalKill(ptyIdRef.current)
+      }
+      term.dispose()
+      termInstance.current = null
+    }
+  }, [cwd])
+
   useEffect(() => {
-    const loadCwd = async () => {
-      try {
-        const dir = await window.electronAPI.terminalGetCwd()
-        setCwd(dir)
-      } catch (err) {
-        console.error('Failed to get terminal cwd:', err)
-      }
+    const cleanupPromise = initTerminal()
+    return () => {
+      cleanupPromise.then(cleanup => cleanup?.())
     }
-    loadCwd()
-  }, [])
-
-  // Auto-scroll to bottom when history changes or a command is running
-  useEffect(() => {
-    if (outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight
-    }
-  }, [history, running])
-
-  // Focus input when clicking on the terminal area
-  const handlePaneClick = useCallback(() => {
-    inputRef.current?.focus()
-  }, [])
-
-  const executeCommand = useCallback(async () => {
-    const trimmed = input.trim()
-    if (!trimmed || running) return
-
-    setLastCommand(trimmed)
-    setInput('')
-    setRunning(true)
-
-    try {
-      const result: CommandResult = await window.electronAPI.terminalExecute(trimmed, cwd)
-
-      const entry: HistoryEntry = {
-        command: trimmed,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        timestamp: new Date().toLocaleTimeString(),
-      }
-
-      setHistory(prev => [...prev, entry])
-
-      if (onCommandResult) {
-        onCommandResult(result)
-      }
-
-      // Update cwd after cd commands
-      if (/^\s*cd\s/.test(trimmed)) {
-        try {
-          const newCwd = await window.electronAPI.terminalGetCwd()
-          setCwd(newCwd)
-        } catch {
-          // keep existing cwd
-        }
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      const entry: HistoryEntry = {
-        command: trimmed,
-        stdout: '',
-        stderr: errorMsg,
-        exitCode: 1,
-        timestamp: new Date().toLocaleTimeString(),
-      }
-      setHistory(prev => [...prev, entry])
-    } finally {
-      setRunning(false)
-      // Re-focus input after execution
-      setTimeout(() => inputRef.current?.focus(), 0)
-    }
-  }, [input, running, cwd, onCommandResult])
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      executeCommand()
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (lastCommand) {
-        setInput(lastCommand)
-      }
-    }
-  }, [executeCommand, lastCommand])
+  }, [initTerminal])
 
   const handleClear = useCallback(() => {
-    setHistory([])
+    termInstance.current?.clear()
   }, [])
 
   return (
-    <div className="terminal-pane" onClick={handlePaneClick}>
+    <div className="terminal-pane">
       <div className="terminal-topbar">
         <span className="terminal-topbar-title">Terminal</span>
-        {cwd && <span className="terminal-topbar-cwd" title={cwd}>{cwd}</span>}
         <button className="terminal-clear-btn" onClick={handleClear} title="Clear terminal">
           Clear
         </button>
       </div>
-
-      <div className="terminal-output" ref={outputRef}>
-        {history.map((entry, idx) => (
-          <div key={idx} className="terminal-line">
-            <div className="terminal-cmd">
-              <span className="terminal-prompt">$</span> {entry.command}
-              <span className="terminal-timestamp">{entry.timestamp}</span>
-            </div>
-            {entry.stdout && (
-              <pre className="terminal-stdout">{entry.stdout}</pre>
-            )}
-            {entry.stderr && (
-              <pre className="terminal-stderr">{entry.stderr}</pre>
-            )}
-            {entry.exitCode !== 0 && (
-              <div className="terminal-exit-code">exit code: {entry.exitCode}</div>
-            )}
-          </div>
-        ))}
-
-        {running && (
-          <div className="terminal-running">
-            <span className="terminal-spinner" />
-            Running...
-          </div>
-        )}
-      </div>
-
-      <div className="terminal-input-row">
-        <span className="terminal-prompt">$</span>
-        <input
-          ref={inputRef}
-          className="terminal-input"
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter command..."
-          disabled={running}
-          autoFocus
-        />
-      </div>
+      <div className="terminal-xterm-container" ref={terminalRef} />
     </div>
   )
 }

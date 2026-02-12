@@ -4,6 +4,7 @@ import type { UserFile, UserFileInfo } from '../types'
 interface WorkspacePaneProps {
   onOpenInEditor?: (file: UserFile) => void | Promise<void>
   onNotify?: (text: string, type?: 'error' | 'warning' | 'success') => void
+  onDownloaded?: (name: string, path: string) => void
 }
 
 function formatFileSize(bytes: number): string {
@@ -32,12 +33,16 @@ function formatDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString()
 }
 
-export default function WorkspacePane({ onOpenInEditor, onNotify }: WorkspacePaneProps) {
+export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }: WorkspacePaneProps) {
+  const [activeTab, setActiveTab] = useState<'files' | 'agents'>('files')
   const [files, setFiles] = useState<UserFile[]>([])
   const [loading, setLoading] = useState(true)
   const [dragOver, setDragOver] = useState(false)
+  const [draggingFileName, setDraggingFileName] = useState<string | null>(null)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [detailsFile, setDetailsFile] = useState<UserFileInfo | null>(null)
+  const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type'>('modified')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   const loadFiles = useCallback(async () => {
     try {
@@ -121,6 +126,7 @@ export default function WorkspacePane({ onOpenInEditor, onNotify }: WorkspacePan
   const handleSaveAs = async (file: UserFile) => {
     const ok = await window.electronAPI.saveFileAs(file.path)
     if (!ok) onNotify?.(`Save As cancelled or failed for "${file.name}".`, 'warning')
+    if (ok) onDownloaded?.(file.name, file.path)
   }
 
   const handleRename = async (file: UserFile) => {
@@ -191,71 +197,146 @@ export default function WorkspacePane({ onOpenInEditor, onNotify }: WorkspacePan
   }
 
   return (
-    <div
-      className="workspace-pane-files"
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
-    >
-      <div className="files-header">
-        <h2>Library</h2>
-        <div className="files-header-actions">
-          <button className="files-btn" onClick={handleImport} title="Import file">
-            + Import
-          </button>
-          <button className="files-btn secondary" onClick={handleOpenFolder} title="Open folder">
-            Open Folder
-          </button>
-        </div>
+    <div className="workspace-pane-container">
+      <div className="workspace-tab-bar">
+        <button 
+          className={`workspace-tab-btn ${activeTab === 'files' ? 'active' : ''}`}
+          onClick={() => setActiveTab('files')}
+        >
+          Files
+        </button>
+        <button 
+          className={`workspace-tab-btn ${activeTab === 'agents' ? 'active' : ''}`}
+          onClick={() => setActiveTab('agents')}
+        >
+          Agents
+        </button>
       </div>
 
-      {loading ? (
-        <div className="files-empty">Loading...</div>
-      ) : files.length === 0 ? (
-        <div className={`files-empty ${dragOver ? 'drag-over' : ''}`}>
-          <span className="files-empty-icon">{'\u{1F4C2}'}</span>
-          <p>No files yet</p>
-          <span className="files-empty-sub">Drag files here or click "Import"</span>
-        </div>
-      ) : (
-        <div className="files-list">
-          {files.map((file) => (
-            <div key={file.name} className="file-item">
-              <span className="file-icon">{fileIcon(file.type)}</span>
-              <div className="file-info">
-                <span className="file-name">{file.name}</span>
-                <span className="file-meta">{formatFileSize(file.size)}</span>
-              </div>
-              <div className="file-actions">
-                <button
-                  className="file-menu-btn"
-                  title="File actions"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setOpenMenu((prev) => (prev === file.name ? null : file.name))
+      {activeTab === 'files' ? (
+        <div
+          className="workspace-pane-files"
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+        >
+          <div className="files-header">
+            <h2>Library</h2>
+            <div className="files-header-actions">
+              <select
+                className="files-sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as any)}
+                title="Sort files"
+              >
+                <option value="modified">Sort: Modified</option>
+                <option value="name">Sort: Name</option>
+                <option value="size">Sort: Size</option>
+                <option value="type">Sort: Type</option>
+              </select>
+              <button className="files-btn secondary" onClick={() => setSortDir((p) => p === 'asc' ? 'desc' : 'asc')}>
+                {sortDir === 'asc' ? 'Asc' : 'Desc'}
+              </button>
+              <button className="files-btn" onClick={handleImport} title="Import file">
+                + Import
+              </button>
+              <button className="files-btn secondary" onClick={handleOpenFolder} title="Open folder">
+                Open Folder
+              </button>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="files-empty">Loading...</div>
+          ) : files.length === 0 ? (
+            <div className={`files-empty ${dragOver ? 'drag-over' : ''}`}>
+              <span className="files-empty-icon">{'\u{1F4C2}'}</span>
+              <p>No files yet</p>
+              <span className="files-empty-sub">Drag files here or click "Import"</span>
+            </div>
+          ) : (
+            <div className="files-list">
+              {[...files].sort((a, b) => {
+                const dir = sortDir === 'asc' ? 1 : -1
+                if (sortBy === 'name') return a.name.localeCompare(b.name) * dir
+                if (sortBy === 'size') return (a.size - b.size) * dir
+                if (sortBy === 'type') return a.type.localeCompare(b.type) * dir
+                return (new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime()) * dir
+              }).map((file, index, arr) => (
+                <div
+                  key={file.name}
+                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''}`}
+                  draggable
+                  onDragStart={() => setDraggingFileName(file.name)}
+                  onDragEnd={() => setDraggingFileName(null)}
+                  onDragOver={(e) => {
+                    e.preventDefault()
+                    if (!draggingFileName || draggingFileName === file.name) return
+                    const from = files.findIndex((f) => f.name === draggingFileName)
+                    const to = files.findIndex((f) => f.name === file.name)
+                    if (from < 0 || to < 0 || from === to) return
+                    const next = [...files]
+                    const [moved] = next.splice(from, 1)
+                    next.splice(to, 0, moved)
+                    setFiles(next)
                   }}
                 >
-                  ⋯
-                </button>
-                {openMenu === file.name && (
-                  <div className="file-action-menu" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => { handleSaveAs(file); setOpenMenu(null) }}>Download</button>
-                    <button onClick={() => { onOpenInEditor?.(file); setOpenMenu(null) }}>Edit</button>
-                    <button onClick={() => { handleRename(file); setOpenMenu(null) }}>Rename</button>
-                    <button onClick={() => { handleMove(file); setOpenMenu(null) }}>Move</button>
-                    <button onClick={() => { handleDuplicate(file); setOpenMenu(null) }}>Duplicate</button>
-                    <button onClick={() => { handleCopyPath(file); setOpenMenu(null) }}>Copy Path</button>
-                    <button onClick={() => { handleDetails(file); setOpenMenu(null) }}>View Details</button>
-                    <button onClick={() => { handleShowInExplorer(file); setOpenMenu(null) }}>Open in Explorer</button>
-                    <button onClick={() => { handleOpenExternal(file); setOpenMenu(null) }}>Open Externally</button>
-                    <button className="danger" onClick={() => { handleDelete(file.name); setOpenMenu(null) }}>
-                      Delete
-                    </button>
+                  <span className="file-icon">{fileIcon(file.type)}</span>
+                  <div className="file-info">
+                    <span className="file-name">{file.name}</span>
+                    <span className="file-meta">{formatFileSize(file.size)}</span>
                   </div>
-                )}
-              </div>
+                  <button className="file-open-code-btn" onClick={() => onOpenInEditor?.(file)} title="Open in Code">
+                    Open
+                  </button>
+                  <div className="file-actions">
+                    <button
+                      className="file-menu-btn"
+                      title="File actions"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenMenu((prev) => (prev === file.name ? null : file.name))
+                      }}
+                    >
+                      ⋯
+                    </button>
+                    {openMenu === file.name && (
+                      <div className="file-action-menu" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => { handleSaveAs(file); setOpenMenu(null) }}>Download</button>
+                        <button onClick={() => { onOpenInEditor?.(file); setOpenMenu(null) }}>Open in Code</button>
+                        <button onClick={() => { handleRename(file); setOpenMenu(null) }}>Rename</button>
+                        <button onClick={() => { handleMove(file); setOpenMenu(null) }}>Move</button>
+                        <button onClick={() => { handleDuplicate(file); setOpenMenu(null) }}>Duplicate</button>
+                        <button onClick={() => { handleCopyPath(file); setOpenMenu(null) }}>Copy Path</button>
+                        <button onClick={() => { handleDetails(file); setOpenMenu(null) }}>View Details</button>
+                        <button onClick={() => { handleShowInExplorer(file); setOpenMenu(null) }}>Open in Explorer</button>
+                        <button onClick={() => { handleOpenExternal(file); setOpenMenu(null) }}>Open Externally</button>
+                        <button className="danger" onClick={() => { handleDelete(file.name); setOpenMenu(null) }}>
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+        </div>
+      ) : (
+        <div className="workspace-pane-agents">
+          <div className="agents-header">
+            <h2>Agent Orchestration</h2>
+            <p className="agents-sub">Define complex multi-step tasks for AI agents to execute.</p>
+          </div>
+          
+          <div className="agents-empty">
+            <span className="big-icon">{'\u{1F916}'}</span>
+            <p>No active agent tasks</p>
+            <span className="sub">Use the "Plan" mode in Code view to generate a task list.</span>
+            <button className="files-btn" style={{ marginTop: 16 }} onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', ctrlKey: true }))}>
+              Go to Code View
+            </button>
+          </div>
         </div>
       )}
 

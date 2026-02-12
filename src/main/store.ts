@@ -36,6 +36,14 @@ export interface Settings {
   activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
   codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
   imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+  systemPrompts?: {
+    chat: string
+    coding: string
+    plan: string
+    build: string
+    bugfix: string
+    image: string
+  }
 }
 
 // --- Default Settings ---
@@ -49,6 +57,14 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'glass',
   codingProvider: 'ollama',
   imageProvider: 'openai',
+  systemPrompts: {
+    chat: 'You are a helpful AI assistant. Provide clear and direct answers.',
+    coding: 'You are a senior software engineer. Return practical, correct code with minimal fluff.',
+    plan: 'You are a technical planner. Break work into concrete executable steps and call out risks.',
+    build: 'You are a coding agent in build mode. Implement requested changes completely and safely.',
+    bugfix: 'You are in bugfix mode. Identify the root cause and provide the minimal robust fix.',
+    image: 'You generate image prompts optimized for clear, high-quality outputs.',
+  },
 }
 
 // --- Storage Paths ---

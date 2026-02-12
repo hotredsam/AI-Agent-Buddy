@@ -19,6 +19,7 @@ interface ChatPaneProps {
   onSendToEditor?: (code: string) => void
   onRunInTerminal?: (command: string) => void
   onSaveAsFile?: (code: string, language: string) => void | Promise<void>
+  onCodeFileAction?: (action: 'add' | 'download' | 'open' | 'run', code: string, language: string) => void | Promise<void>
 }
 
 /**
@@ -32,6 +33,7 @@ function renderMarkdown(
   onSendToEditor?: (code: string) => void,
   onRunInTerminal?: (command: string) => void,
   onSaveAsFile?: (code: string, language: string) => void | Promise<void>,
+  onCodeFileAction?: (action: 'add' | 'download' | 'open' | 'run', code: string, language: string) => void | Promise<void>,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
 
@@ -56,6 +58,7 @@ function renderMarkdown(
         onSendToEditor={onSendToEditor}
         onRunInTerminal={onRunInTerminal}
         onSaveAsFile={onSaveAsFile}
+        onCodeFileAction={onCodeFileAction}
       />
     )
     lastIndex = match.index + match[0].length
@@ -182,14 +185,16 @@ function renderInline(text: string, keyOffset: number): React.ReactNode[] {
 /**
  * Code block component with copy-to-clipboard, send-to-editor, and run buttons
  */
-function CodeBlock({ language, code, onSendToEditor, onRunInTerminal, onSaveAsFile }: {
+function CodeBlock({ language, code, onSendToEditor, onRunInTerminal, onSaveAsFile, onCodeFileAction }: {
   language: string
   code: string
   onSendToEditor?: (code: string) => void
   onRunInTerminal?: (command: string) => void
   onSaveAsFile?: (code: string, language: string) => void | Promise<void>
+  onCodeFileAction?: (action: 'add' | 'download' | 'open' | 'run', code: string, language: string) => void | Promise<void>
 }) {
   const [copied, setCopied] = useState(false)
+  const [showFileMenu, setShowFileMenu] = useState(false)
 
   const handleCopy = async () => {
     try {
@@ -220,10 +225,32 @@ function CodeBlock({ language, code, onSendToEditor, onRunInTerminal, onSaveAsFi
               {'\u{25B6}'} Run
             </button>
           )}
-          {onSaveAsFile && (
-            <button className="code-block-copy" onClick={() => onSaveAsFile(code, language)} title="Save as File">
-              {'\u{1F4BE}'} Save
-            </button>
+          {(onSaveAsFile || onCodeFileAction) && (
+            <div className="code-block-file-actions">
+              <button
+                className="code-block-copy"
+                onClick={() => setShowFileMenu((prev) => !prev)}
+                title="File actions"
+              >
+                {'\u{1F4BE}'} File
+              </button>
+              {showFileMenu && (
+                <div className="code-block-file-menu">
+                  <button onClick={() => { onSaveAsFile?.(code, language); setShowFileMenu(false) }}>
+                    Save to Files...
+                  </button>
+                  <button onClick={() => { onCodeFileAction?.('download', code, language); setShowFileMenu(false) }}>
+                    Download
+                  </button>
+                  <button onClick={() => { onCodeFileAction?.('open', code, language); setShowFileMenu(false) }}>
+                    Open in Code
+                  </button>
+                  <button onClick={() => { onCodeFileAction?.('run', code, language); setShowFileMenu(false) }}>
+                    Run in Code
+                  </button>
+                </div>
+              )}
+            </div>
           )}
           <button className="code-block-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy'}
@@ -259,6 +286,7 @@ export default function ChatPane({
   onSendToEditor,
   onRunInTerminal,
   onSaveAsFile,
+  onCodeFileAction,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -283,7 +311,7 @@ export default function ChatPane({
     ? formatCtx(contextInfo.effectiveCtx)
     : (defaultCtx > 0 ? formatCtx(defaultCtx) : '?')
   const providerText = providerName.charAt(0).toUpperCase() + providerName.slice(1)
-  const modelSummary = `${providerText} · ${modelName || 'model'} · ${ctxText} ctx · ${providerStatus} · Fallback: ${fallbackPolicy}`
+  const modelSummary = `${providerText} | ${modelName || 'model'} | ${ctxText} ctx | ${providerStatus} | Fallback: ${fallbackPolicy}`
 
   // Render the top info bar
   const topBar = (
@@ -335,7 +363,7 @@ export default function ChatPane({
           <div key={msg.id} className={`message-row ${msg.role}`}>
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(msg.content, onSendToEditor, onRunInTerminal, onSaveAsFile)}
+                {renderMarkdown(msg.content, onSendToEditor, onRunInTerminal, onSaveAsFile, onCodeFileAction)}
               </div>
               <div className="message-avatar">
                 {msg.role === 'user' ? '\u{1F464}' : agentEmoji}
@@ -348,7 +376,7 @@ export default function ChatPane({
           <div className="message-row assistant">
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal, onSaveAsFile)}
+                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal, onSaveAsFile, onCodeFileAction)}
                 <span className="streaming-cursor" />
               </div>
               <div className="message-avatar">{agentEmoji}</div>

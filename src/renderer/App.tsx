@@ -30,10 +30,19 @@ const DEFAULT_SETTINGS: Settings = {
   activeProvider: 'ollama',
   codingProvider: 'ollama',
   imageProvider: 'openai',
+  systemPrompts: {
+    chat: 'You are a helpful AI assistant. Provide clear and direct answers.',
+    coding: 'You are a senior software engineer. Return practical, correct code with minimal fluff.',
+    plan: 'You are a technical planner. Break work into concrete executable steps and call out risks.',
+    build: 'You are a coding agent in build mode. Implement requested changes completely and safely.',
+    bugfix: 'You are in bugfix mode. Identify the root cause and provide the minimal robust fix.',
+    image: 'You generate image prompts optimized for clear, high-quality outputs.',
+  },
 }
 
 let toastIdCounter = 0
 let untitledCounter = 0
+let downloadIdCounter = 0
 
 function nextToastId(): string {
   return `toast-${++toastIdCounter}`
@@ -84,9 +93,13 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null)
   const [recentWorkspacePaths, setRecentWorkspacePaths] = useState<string[]>([])
+  const [recentFiles, setRecentFiles] = useState<string[]>([])
   const [showExplorer, setShowExplorer] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
   const [providerConnectionStatus, setProviderConnectionStatus] = useState<'Connected' | 'Offline'>('Connected')
+  const [codeAIBusy, setCodeAIBusy] = useState(false)
+  const [codeAIStatus, setCodeAIStatus] = useState('')
+  const [codingModelOptions, setCodingModelOptions] = useState<string[]>([])
 
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingText, setStreamingText] = useState('')
@@ -99,6 +112,7 @@ export default function App() {
   } | null>(null)
 
   const [toasts, setToasts] = useState<ToastMessage[]>([])
+  const [downloads, setDownloads] = useState<Array<{ id: string; name: string; path: string }>>([])
 
   const addToast = useCallback((
     text: string,
@@ -111,6 +125,12 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
+  const addDownload = useCallback((name: string, path: string) => {
+    downloadIdCounter += 1
+    const item = { id: `download-${downloadIdCounter}`, name, path }
+    setDownloads((prev) => [item, ...prev].slice(0, 5))
+  }, [])
+
   const activeTab = useMemo(
     () => editorTabs.find((tab) => tab.id === activeTabId) || null,
     [editorTabs, activeTabId]
@@ -120,6 +140,8 @@ export default function App() {
     const tabId = filePath
     const language = detectLanguage(filePath)
     const name = fileNameFromPath(filePath)
+
+    setRecentFiles((prev) => [filePath, ...prev.filter((p) => p !== filePath)].slice(0, 10))
 
     setEditorTabs((prev) => {
       const existing = prev.find((tab) => tab.id === tabId)
@@ -164,6 +186,9 @@ export default function App() {
         } else {
           setProviderConnectionStatus('Connected')
         }
+
+        const localModels = await window.electronAPI.listModels()
+        setCodingModelOptions(localModels)
       } catch (err: any) {
         addToast('Failed to initialize: ' + (err?.message || 'Unknown error'))
       }
@@ -399,36 +424,92 @@ export default function App() {
   const handleRunAICode = useCallback(async (
     promptText: string,
     provider: NonNullable<Settings['activeProvider']>,
-    model: string
+    model: string,
+    mode: 'coding' | 'plan' | 'build' | 'bugfix'
   ) => {
+    setCodeAIBusy(true)
+    setCodeAIStatus('Sending request...')
     const context = activeTab?.content || ''
-    const result = await window.electronAPI.generateCode({
-      prompt: promptText,
-      context,
-      provider,
-      model,
-    })
-    if (!result.text) {
-      addToast(result.error || 'AI code generation failed.')
-      return
-    }
+    try {
+      const timeout = new Promise<{ text: null; error: string }>((resolve) => {
+        setTimeout(() => resolve({ text: null, error: 'Request timed out. Try a smaller model or shorter prompt.' }), 90000)
+      })
+      setCodeAIStatus('Generating response...')
+      const result = await Promise.race([
+        window.electronAPI.generateCode({
+          prompt: promptText,
+          context,
+          provider,
+          model,
+          mode,
+        }),
+        timeout,
+      ])
+      if (!result.text) {
+        addToast(result.error || 'AI code generation failed.')
+        setCodeAIStatus(result.error || 'Generation failed')
+        return
+      }
 
-    const extracted = (() => {
-      const match = result.text!.match(/```[\w-]*\n([\s\S]*?)```/)
-      return (match ? match[1] : result.text!).trim()
-    })()
+      const extracted = (() => {
+        const match = result.text!.match(/```[\w-]*\n([\s\S]*?)```/)
+        return (match ? match[1] : result.text!).trim()
+      })()
 
-    if (activeTabId) {
-      setEditorTabs((prev) => prev.map((tab) => (
-        tab.id === activeTabId ? { ...tab, content: extracted } : tab
-      )))
-    } else {
-      const tab = createUntitledTab(extracted)
-      setEditorTabs((prev) => [...prev, tab])
-      setActiveTabId(tab.id)
+      if (mode === 'plan') {
+        const planTab: EditorTab = {
+          id: `plan-${Date.now()}`,
+          filePath: null,
+          name: 'PLAN.md',
+          content: result.text || '',
+          language: 'Markdown',
+          savedContent: '',
+        }
+        setEditorTabs((prev) => [...prev, planTab])
+        setActiveTabId(planTab.id)
+      } else if (activeTabId) {
+        setEditorTabs((prev) => prev.map((tab) => (
+          tab.id === activeTabId ? { ...tab, content: extracted } : tab
+        )))
+      } else {
+        const tab = createUntitledTab(extracted)
+        setEditorTabs((prev) => [...prev, tab])
+        setActiveTabId(tab.id)
+      }
+      setCodeAIStatus('Applied to editor')
+      addToast('Applied AI output to editor.', 'success')
+    } finally {
+      setCodeAIBusy(false)
+      setTimeout(() => setCodeAIStatus(''), 2500)
     }
-    addToast('Applied AI output to editor.', 'success')
   }, [activeTab, activeTabId, addToast])
+
+  const handleRenameTab = useCallback(async (tabId: string, newName: string) => {
+    const tab = editorTabs.find((t) => t.id === tabId)
+    if (!tab) return
+    const trimmed = newName.trim()
+    if (!trimmed) return
+
+    if (tab.filePath) {
+      const renamedPath = await window.electronAPI.renameWorkspacePath(tab.filePath, trimmed)
+      if (!renamedPath) {
+        addToast('Rename failed.')
+        return
+      }
+      setEditorTabs((prev) => prev.map((t) => (
+        t.id === tabId
+          ? { ...t, id: renamedPath, filePath: renamedPath, name: trimmed, language: detectLanguage(renamedPath) }
+          : t
+      )))
+      setActiveTabId((prev) => (prev === tabId ? renamedPath : prev))
+      if (workspaceRootPath) {
+        // trigger explorer refresh by re-setting same path
+        setWorkspaceRootPath(workspaceRootPath)
+      }
+    } else {
+      setEditorTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, name: trimmed } : t)))
+    }
+  }, [editorTabs, addToast, workspaceRootPath])
 
   const handleSaveCodeBlockAsFile = useCallback(async (code: string, language: string) => {
     const extByLang: Record<string, string> = {
@@ -446,10 +527,51 @@ export default function App() {
     const created = await window.electronAPI.createFile(fileName, code)
     if (created) {
       addToast(`Saved "${fileName}" to Library.`, 'success')
+      addDownload(fileName, created.path)
     } else {
       addToast('Failed to save file.')
     }
-  }, [addToast])
+  }, [addToast, addDownload])
+
+  const handleCodeFileAction = useCallback(async (
+    action: 'add' | 'download' | 'open' | 'run',
+    code: string,
+    language: string
+  ) => {
+    const extByLang: Record<string, string> = {
+      typescript: 'ts', javascript: 'js', python: 'py', rust: 'rs', go: 'go',
+      java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs', ruby: 'rb', php: 'php',
+      swift: 'swift', html: 'html', css: 'css', scss: 'scss', json: 'json',
+      yaml: 'yml', xml: 'xml', markdown: 'md', sql: 'sql', shell: 'sh',
+      bash: 'sh', powershell: 'ps1',
+    }
+    const ext = extByLang[(language || '').toLowerCase()] || 'txt'
+    const fileName = `generated-${Date.now()}.${ext}`
+    const created = await window.electronAPI.createFile(fileName, code)
+    if (!created) {
+      addToast('Failed to create file from code block.')
+      return
+    }
+    addDownload(created.name, created.path)
+
+    if (action === 'download') {
+      const ok = await window.electronAPI.saveFileAs(created.path)
+      if (!ok) addToast('Download cancelled.', 'warning')
+      return
+    }
+    if (action === 'open') {
+      openOrUpdateFileTab(created.path, code)
+      setView('code')
+      return
+    }
+    if (action === 'run') {
+      openOrUpdateFileTab(created.path, code)
+      setView('code')
+      setShowTerminal(true)
+      return
+    }
+    addToast(`Added "${created.name}" to Files.`, 'success')
+  }, [addToast, addDownload, openOrUpdateFileTab])
 
   const handleSendMessage = useCallback(async (text: string) => {
     if (!activeConversationId || isStreaming) return
@@ -592,6 +714,7 @@ export default function App() {
                   setView('code')
                 }}
                 onSaveAsFile={handleSaveCodeBlockAsFile}
+                onCodeFileAction={handleCodeFileAction}
               />
               <Composer onSend={handleSendMessage} disabled={isStreaming || !activeConversationId} />
             </>
@@ -603,6 +726,7 @@ export default function App() {
             <WorkspacePane
               onOpenInEditor={handleOpenInEditor}
               onNotify={addToast}
+              onDownloaded={addDownload}
             />
           )}
 
@@ -622,6 +746,9 @@ export default function App() {
                 onSaveFile={handleEditorSave}
                 onCloseTab={() => activeTabId ? handleCloseTab(activeTabId) : undefined}
                 onRunAI={handleRunAICode}
+                aiBusy={codeAIBusy}
+                aiStatus={codeAIStatus}
+                modelOptions={codingModelOptions}
               />
               <div className="code-main-area">
                 {showExplorer && (
@@ -640,17 +767,20 @@ export default function App() {
                       activeTabId={activeTabId}
                       onSelectTab={handleSelectTab}
                       onCloseTab={handleCloseTab}
+                      onRenameTab={handleRenameTab}
                       onContentChange={handleEditorContentChange}
                       onSave={handleEditorSave}
                       onNewFile={handleNewFile}
                       onOpenFile={handleOpenFile}
                       onOpenFolder={handleOpenFolder}
                       onOpenRecent={handleOpenRecentFolder}
+                      recentFiles={recentFiles}
+                      onOpenRecentFile={handleOpenPathInEditor}
                     />
                   </div>
                   {showTerminal && (
                     <div className="workspace-split-bottom">
-                      <TerminalPane />
+                      <TerminalPane cwd={workspaceRootPath || undefined} />
                     </div>
                   )}
                 </div>
@@ -660,6 +790,26 @@ export default function App() {
         </div>
 
         <Toast toasts={toasts} onDismiss={dismissToast} />
+        {downloads.length > 0 && (
+          <div className="download-shelf">
+            {downloads.map((d) => (
+              <div key={d.id} className="download-item">
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <strong className="download-name">{d.name}</strong>
+                  <div className="download-sub">Ready for download/use</div>
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button className="download-open-btn" onClick={() => window.electronAPI.showInExplorer(d.path)}>
+                    Show
+                  </button>
+                  <button className="download-close-btn" onClick={() => setDownloads(prev => prev.filter(item => item.id !== d.id))}>
+                    &#x2715;
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

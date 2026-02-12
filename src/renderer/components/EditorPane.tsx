@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useCallback } from 'react'
+import React, { useMemo, useEffect, useCallback, useState } from 'react'
 import Editor, { loader } from '@monaco-editor/react'
 
 export interface EditorTab {
@@ -15,12 +15,15 @@ interface EditorPaneProps {
   activeTabId: string | null
   onSelectTab: (tabId: string) => void
   onCloseTab: (tabId: string) => void
+  onRenameTab?: (tabId: string, name: string) => void
   onContentChange: (content: string) => void
   onSave: () => void
   onNewFile?: () => void
   onOpenFile?: () => void
   onOpenFolder?: () => void
   onOpenRecent?: () => void
+  recentFiles?: string[]
+  onOpenRecentFile?: (path: string) => void
 }
 
 const MONACO_LANG_MAP: Record<string, string> = {
@@ -81,13 +84,18 @@ export default function EditorPane({
   activeTabId,
   onSelectTab,
   onCloseTab,
+  onRenameTab,
   onContentChange,
   onSave,
   onNewFile,
   onOpenFile,
   onOpenFolder,
   onOpenRecent,
+  recentFiles = [],
+  onOpenRecentFile,
 }: EditorPaneProps) {
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   useEffect(() => {
     ensureMonacoTheme()
   }, [])
@@ -117,18 +125,59 @@ export default function EditorPane({
       <div className="editor-pane">
         <div className="editor-welcome">
           <div className="editor-welcome-card">
-            <h2>Start Coding</h2>
-            <p className="editor-welcome-sub">Open a project or file to begin.</p>
-            <div className="editor-welcome-actions">
-              <button className="editor-save-btn" onClick={onNewFile}>New File</button>
-              <button className="editor-save-btn" onClick={onOpenFile}>Open File...</button>
-              <button className="editor-save-btn" onClick={onOpenFolder}>Open Folder...</button>
-              <button className="editor-save-btn" onClick={onOpenRecent}>Open Recent</button>
+            <div className="editor-welcome-left">
+              <h2>AI Agent IDE</h2>
+              <p className="editor-welcome-sub">Editing evolved with local and cloud intelligence.</p>
+              
+              <div className="welcome-section">
+                <h3>Start</h3>
+                <div className="welcome-links">
+                  <button onClick={onNewFile}>
+                    <span className="icon">&#x1F4C4;</span>
+                    New File...
+                  </button>
+                  <button onClick={onOpenFile}>
+                    <span className="icon">&#x1F4C2;</span>
+                    Open File...
+                  </button>
+                  <button onClick={onOpenFolder}>
+                    <span className="icon">&#x1F4C1;</span>
+                    Open Folder...
+                  </button>
+                </div>
+              </div>
+
+              <div className="welcome-section">
+                <h3>Recent</h3>
+                <div className="welcome-recent-list">
+                  {recentFiles.length === 0 ? (
+                    <span className="recent-empty">No recent files</span>
+                  ) : (
+                    recentFiles.map(path => (
+                      <button key={path} className="recent-item" onClick={() => onOpenRecentFile?.(path)}>
+                        <span className="recent-name">{path.split(/[\\/]/).pop()}</span>
+                        <span className="recent-path">{path}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="editor-welcome-links">
-              <button onClick={onOpenFile}>Go to File (Ctrl+O)</button>
-              <button onClick={onOpenFolder}>Open Workspace Folder</button>
-              <button onClick={onNewFile}>Create Untitled File</button>
+
+            <div className="editor-welcome-right">
+              <div className="welcome-section">
+                <h3>Help</h3>
+                <div className="welcome-links">
+                  <button onClick={onOpenFile}>
+                    <span className="icon">&#x2318;</span>
+                    Go to File (Ctrl+P)
+                  </button>
+                  <button onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true }))}>
+                    <span className="icon">&#x2699;</span>
+                    Settings (Ctrl+,)
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -149,7 +198,43 @@ export default function EditorPane({
             onClick={() => onSelectTab(tab.id)}
             title={tab.filePath || tab.name}
           >
-            <span className="editor-tab-name">{tab.name}</span>
+            {renamingTabId === tab.id ? (
+              <input
+                className="editor-tab-rename"
+                value={renameValue}
+                autoFocus
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => {
+                  if (onRenameTab && renameValue.trim()) {
+                    onRenameTab(tab.id, renameValue.trim())
+                  }
+                  setRenamingTabId(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (onRenameTab && renameValue.trim()) {
+                      onRenameTab(tab.id, renameValue.trim())
+                    }
+                    setRenamingTabId(null)
+                  }
+                  if (e.key === 'Escape') {
+                    setRenamingTabId(null)
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <span
+                className="editor-tab-name"
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  setRenamingTabId(tab.id)
+                  setRenameValue(tab.name)
+                }}
+              >
+                {tab.name}
+              </span>
+            )}
             {tab.content !== tab.savedContent && <span className="editor-tab-dot">●</span>}
             <span
               className="editor-tab-close"

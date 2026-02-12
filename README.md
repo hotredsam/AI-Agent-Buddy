@@ -1,20 +1,23 @@
-# AI Agent IDE
+# AI Agent IDE (AI Agent Buddy)
 
-Offline ChatGPT-style desktop assistant powered by local LLMs via Ollama. Built with Electron + React + TypeScript.
+Offline-first AI coding environment powered by local and cloud LLMs. Built with Electron + React + TypeScript + Vite.
 
 ## Features
 
-- **Chat UI** — Sidebar conversation list, message bubbles, streaming responses
-- **Local LLM** — Ollama integration with GLM 4.7 Flash (128k context with auto-fallback)
-- **Conversation Management** — Create, rename, delete conversations
-- **Settings** — Configure Ollama endpoint, model name, context window size
-- **Offline-First** — All data stored locally as JSON files
-- **Workspace Tab** — Placeholder for future IDE features
+- **Local LLM Integration** — Powered by **Ollama** (GLM 4.7 Flash default). Includes streaming, health checks, and context window auto-reduction.
+- **Cloud Providers** — Support for **OpenAI, Anthropic, Google AI, and Groq** with stored API keys.
+- **Monaco Code Editor** — Integrated VS Code editor engine with syntax highlighting, multi-tab support, and AI code injection.
+- **Integrated Terminal** — Real PTY-backed terminal (xterm.js + node-pty) for interactive shell support.
+- **File Library** — OneDrive-style file management with drag-and-drop import, Save As, Rename, Move, and Duplicate.
+- **AI Coding Pane** — Dedicated AI panel in Code view with specialized modes: **Code, Plan, Build, Bug Fix**.
+- **10 Glassmorphic Themes** — Beautiful Apple Vision OS inspired design with neon accents and theme-specific agent emojis.
+- **Permissions System** — Control AI access to Terminal, File Write, and Code Execution for security.
+- **Keyboard Shortcuts** — Full set of productivity shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+1/2/3, etc.).
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 18+
-- [Ollama](https://ollama.ai/) running locally with GLM 4.7 Flash:
+- [Ollama](https://ollama.ai/) running locally:
   ```bash
   ollama pull glm-4.7-flash
   ollama serve
@@ -27,8 +30,6 @@ npm install
 npm run dev:electron
 ```
 
-This builds the main process + preload, starts Vite dev server, and launches Electron.
-
 ## Build for Production
 
 ```bash
@@ -36,52 +37,39 @@ npm run build
 npm run electron
 ```
 
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl + 1` | Switch to Chat View |
+| `Ctrl + 2` | Switch to Code View |
+| `Ctrl + 3` | Switch to File Library |
+| `Ctrl + ,` | Open Settings |
+| `Ctrl + N` | New Chat / New File |
+| `Ctrl + O` | Open File in Editor |
+| `Ctrl + S` | Save Current File |
+| `Ctrl + B` | Toggle Sidebar |
+| `Ctrl + P` | Quick Open File |
+
 ## Project Structure
 
 ```
 src/
-├── main/           # Electron main process
-│   ├── index.ts    # App entry, window creation
-│   ├── ipc.ts      # IPC channel handlers
+├── main/           # Electron main process (Node.js)
+│   ├── index.ts    # App entry, lifecycle, window creation
+│   ├── ipc.ts      # ALL IPC channel handlers
 │   ├── ollama.ts   # Ollama API client (streaming)
-│   └── store.ts    # JSON file persistence
-├── preload/        # Context bridge (IPC to renderer)
+│   ├── store.ts    # JSON persistence & File management
+│   └── ...         # Cloud provider clients (openai, anthropic, etc)
+├── preload/        # Context bridge
 │   └── index.ts
-└── renderer/       # React frontend
-    ├── App.tsx     # Root component
-    ├── components/ # UI components
-    ├── styles/     # CSS
-    └── types.ts    # TypeScript interfaces
+└── renderer/       # React frontend (Vite)
+    ├── App.tsx     # Root component & State management
+    ├── themes.ts   # Theme definitions (10 themes)
+    ├── components/ # React components (Editor, Terminal, Chat, etc)
+    └── styles/     # Global CSS & Design system
 ```
 
-## IPC Channels
+## License
 
-| Channel | Description |
-|---|---|
-| `chat:listConversations` | List all conversations |
-| `chat:createConversation` | Create new conversation |
-| `chat:deleteConversation` | Delete conversation by ID |
-| `chat:renameConversation` | Rename conversation |
-| `chat:listMessages` | Get messages for conversation |
-| `chat:sendMessage` | Send message + stream response |
-| `settings:get` | Get app settings |
-| `settings:set` | Update app settings |
-| `ollama:health` | Check Ollama connection |
-
-## Codex Check-Ins
-
-Run periodic code reviews using ChatGPT Codex exec:
-
-```powershell
-.\scripts\codex_checkin.ps1
-```
-
-See `docs/CODEX_CHECKIN_PROMPT.md` for the review prompt.
-
-## Next Steps
-
-See `docs/CURSOR_NEXT_PROMPT.md` for continuation prompts to guide further development.
-
-## Attribution
-
-Built as a minimal MVP. Scaffold generated with Claude Code assistance. MIT License.
+MIT License. Built with excellence.

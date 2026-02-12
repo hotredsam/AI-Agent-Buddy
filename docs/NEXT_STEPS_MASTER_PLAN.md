@@ -725,3 +725,52 @@ Execution block 239 focuses on turning roadmap intent into deterministic impleme
 ## Execution Block 240
 Execution block 240 focuses on turning roadmap intent into deterministic implementation. The first priority in this block is user clarity: every visible control should communicate purpose, state, and consequence with minimal cognitive load. The second priority is reliability: all renderer actions must map cleanly through preload to main process handlers and return typed results that include success and error context. The third priority is consistency: key workflows like new file, open file, open folder, save, AI apply, terminal execution, and library management must behave the same regardless of theme, provider selection, or current navigation state. This block also requires instrumentation discipline: when a failure occurs, the user sees a concise actionable message while logs retain detail for debugging. Engineering output from this block is complete only when TypeScript compilation passes for renderer, main, and preload, build artifacts generate without errors, and manual smoke validation confirms behavior on code view, chat view, workspace library, and settings. The work in block 240 also includes UX refinement: menu discoverability, shortcut parity, empty-state guidance, and compact status badges that show provider, model, context, connection, and fallback policy. Finally, this block mandates maintainability: avoid hidden coupling, preserve strict typing, and keep component responsibilities narrow so future contributors can add features such as prompt templates, image previews, quick open, symbol search, and test runners without destabilizing core interactions.
 
+## User Requested Additions (Current Session)
+
+This section tracks the latest required features and constraints:
+
+1. File page drag behavior: users must be able to drag files around in the library UI and re-order quickly.
+2. Code tab file tab rename: double-click tab title should allow in-place rename with persistence when backed by a real path.
+3. Cursor-like coding AI pane: provide mode controls (`plan`, `build`, `bugfix`) and model/provider selection directly in code view.
+4. Code tab AI responsiveness: pressing Enter in the code AI pane must immediately show loading/progress state and failure timeout messaging.
+5. Model defaults and instructions: define and expose separate defaults for chat, coding, plan, build, bugfix, and image generation.
+6. Sidebar/menu behavior: conversation/new-chat controls must move out of hamburger conversation stack and align to vertical menu navigation behavior.
+7. File management improvements: add multiple sorting modes and open-in-code shortcuts.
+8. AI-generated file actions from chat: provide add to files, download, open in code, and run in code options for generated code blocks.
+9. Download UX: show top-right download-style popups so users can act on generated/downloadable files.
+10. Agentized execution workflow: break work into agent tasks, run implementation agents in parallel, then bugfix agents, then documentation agents.
+
+## Agent Task Breakdown (Execution Grid)
+
+### Phase A: Implementation Agents
+- Agent A01: Code menu and editor welcome UX parity with VS Code/Cursor patterns.
+- Agent A02: Code AI pane UX modes (plan/build/bugfix) and clear status indicators.
+- Agent A03: Chat code block action menu expansion and file routing flows.
+- Agent A04: Sidebar/menu interaction simplification and vertical nav coherence.
+- Agent A05: File library drag/reorder interactions.
+- Agent A06: File sorting controls and quick open-in-code shortcuts.
+- Agent A07: Tab rename interactions and persistence path updates.
+- Agent A08: Prompt defaults and settings wiring for multi-task AI instructions.
+
+### Phase B: Bugfix Agents
+- Agent B01: Renderer TypeScript strict mode pass and prop compatibility.
+- Agent B02: Main/preload IPC schema mismatch checks and fallback behavior.
+- Agent B03: Code generation latency/failure UX and timeout messaging checks.
+- Agent B04: File action regressions (download/open/run/rename/move) checks.
+- Agent B05: Sidebar and view keyboard shortcut regression checks.
+- Agent B06: CSS overflow/responsive issues for code menubar and downloads shelf.
+
+### Phase C: Documentation Agents
+- Agent C01: Update user-facing feature changelog.
+- Agent C02: Update architecture notes for new IPC contracts and AI modes.
+- Agent C03: Produce QA checklist for code view, files, chat, and settings.
+- Agent C04: Prepare release notes with known limitations and follow-ups.
+
+## Supervision Protocol
+
+1. Launch all implementation agents concurrently.
+2. Aggregate outputs and apply high-confidence patches only.
+3. Launch bugfix agents in parallel against changed surfaces.
+4. Apply fixes and run full build/type checks.
+5. Launch documentation agents and merge concise outputs into docs.
+6. Final verification and git push.

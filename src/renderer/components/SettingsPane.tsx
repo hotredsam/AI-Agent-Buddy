@@ -49,8 +49,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
     }
   }, [])
 
-  // Live connection status: check on mount and every 30s
-  const checkConnection = useCallback(async () => {
+  const refreshConnection = useCallback(async () => {
     try {
       const result = await window.electronAPI.checkHealth()
       setConnectionStatus(result ? 'ok' : 'fail')
@@ -59,12 +58,27 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
     }
   }, [])
 
+  const [systemStats, setSystemStats] = useState<{ freeMem: number; totalMem: number; platform: string; cpus: number } | null>(null)
+
+  const refreshSystemStats = useCallback(async () => {
+    try {
+      const stats = await window.electronAPI.getSystemStats()
+      setSystemStats(stats)
+    } catch {
+      setSystemStats(null)
+    }
+  }, [])
+
   useEffect(() => {
-    checkConnection()
+    refreshConnection()
     refreshModels()
-    const interval = setInterval(checkConnection, 30000)
+    refreshSystemStats()
+    const interval = setInterval(() => {
+      refreshConnection()
+      refreshSystemStats()
+    }, 30000)
     return () => clearInterval(interval)
-  }, [checkConnection, refreshModels])
+  }, [refreshConnection, refreshModels, refreshSystemStats])
 
   const handleChange = (field: keyof Settings, value: string | number) => {
     const updated = { ...form, [field]: value }
@@ -163,7 +177,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
       <div className="settings-card">
         <div className="settings-card-header">
           <h2>Settings</h2>
-          <div className="live-status" onClick={checkConnection} title="Click to refresh">
+          <div className="live-status" onClick={refreshConnection} title="Click to refresh">
             <span className={`status-dot ${connectionStatus}`} />
             <span className="live-status-text">
               {connectionStatus === 'ok' && 'Connected'}
@@ -454,6 +468,85 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
         </div>
       </div>
 
+      <div className="settings-card provider-card">
+        <h2>AI Instructions</h2>
+        <span className="settings-field-hint" style={{ marginBottom: 16, display: 'block' }}>
+          Default system instructions used by each AI mode. Keep these short and specific.
+        </span>
+        <div className="settings-field">
+          <label htmlFor="prompt-chat">Chat</label>
+          <textarea
+            id="prompt-chat"
+            value={form.systemPrompts?.chat || ''}
+            onChange={(e) => setForm({
+              ...form,
+              systemPrompts: { ...(form.systemPrompts || {} as any), chat: e.target.value } as any,
+            })}
+            onBlur={() => onSave(form)}
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="prompt-coding">Coding</label>
+          <textarea
+            id="prompt-coding"
+            value={form.systemPrompts?.coding || ''}
+            onChange={(e) => setForm({
+              ...form,
+              systemPrompts: { ...(form.systemPrompts || {} as any), coding: e.target.value } as any,
+            })}
+            onBlur={() => onSave(form)}
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="prompt-plan">Plan</label>
+          <textarea
+            id="prompt-plan"
+            value={form.systemPrompts?.plan || ''}
+            onChange={(e) => setForm({
+              ...form,
+              systemPrompts: { ...(form.systemPrompts || {} as any), plan: e.target.value } as any,
+            })}
+            onBlur={() => onSave(form)}
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="prompt-build">Build</label>
+          <textarea
+            id="prompt-build"
+            value={form.systemPrompts?.build || ''}
+            onChange={(e) => setForm({
+              ...form,
+              systemPrompts: { ...(form.systemPrompts || {} as any), build: e.target.value } as any,
+            })}
+            onBlur={() => onSave(form)}
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="prompt-bugfix">Bug Fix</label>
+          <textarea
+            id="prompt-bugfix"
+            value={form.systemPrompts?.bugfix || ''}
+            onChange={(e) => setForm({
+              ...form,
+              systemPrompts: { ...(form.systemPrompts || {} as any), bugfix: e.target.value } as any,
+            })}
+            onBlur={() => onSave(form)}
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="prompt-image">Image</label>
+          <textarea
+            id="prompt-image"
+            value={form.systemPrompts?.image || ''}
+            onChange={(e) => setForm({
+              ...form,
+              systemPrompts: { ...(form.systemPrompts || {} as any), image: e.target.value } as any,
+            })}
+            onBlur={() => onSave(form)}
+          />
+        </div>
+      </div>
+
       {/* Permissions card */}
       <div className="settings-card permissions-card">
         <h2>Permissions</h2>
@@ -541,7 +634,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             {connectionStatus === 'fail' && 'Cannot reach Ollama server'}
             {connectionStatus === 'unknown' && 'Checking connection...'}
           </p>
-          <button className="settings-btn secondary" onClick={checkConnection}>
+          <button className="settings-btn secondary" onClick={refreshConnection}>
             Refresh
           </button>
         </div>
@@ -586,6 +679,35 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             disabled={testing}
           >
             {testing ? 'Running...' : 'Run Check'}
+          </button>
+        </div>
+        {/* System card */}
+        <div className="settings-info-card">
+          <div className="info-card-icon">{'\u{1F5A5}'}</div>
+          <h3>System</h3>
+          {systemStats ? (
+            <div className="diag-results-mini">
+              <div className="diag-row" style={{ fontSize: '10px' }}>
+                {systemStats.cpus} CPUs | {systemStats.platform}
+              </div>
+              <div className="diag-row" style={{ marginTop: 4 }}>
+                <div style={{ width: '100%', height: 4, background: 'var(--glass-input)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{ 
+                    height: '100%', 
+                    width: `${Math.round(((systemStats.totalMem - systemStats.freeMem) / systemStats.totalMem) * 100)}%`,
+                    background: 'var(--accent)'
+                  }} />
+                </div>
+              </div>
+              <div className="diag-models-mini">
+                RAM: {Math.round((systemStats.totalMem - systemStats.freeMem) / 1024 / 1024 / 1024)}GB / {Math.round(systemStats.totalMem / 1024 / 1024 / 1024)}GB
+              </div>
+            </div>
+          ) : (
+            <p>Loading system stats...</p>
+          )}
+          <button className="settings-btn secondary" onClick={refreshSystemStats}>
+            Refresh
           </button>
         </div>
       </div>

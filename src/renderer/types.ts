@@ -33,6 +33,14 @@ export interface Settings {
   activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
   codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
   imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+  systemPrompts?: {
+    chat: string
+    coding: string
+    plan: string
+    build: string
+    bugfix: string
+    image: string
+  }
 }
 
 export interface UserFile {
@@ -105,10 +113,17 @@ export interface ElectronAPI {
   createWorkspaceFolder: (parentPath: string, folderName: string) => Promise<boolean>
   renameWorkspacePath: (targetPath: string, nextName: string) => Promise<string | null>
   deleteWorkspacePath: (targetPath: string) => Promise<boolean>
+  getSystemStats: () => Promise<{ freeMem: number; totalMem: number; platform: string; cpus: number }>
   windowMinimize: () => Promise<void>
   windowMaximize: () => Promise<void>
   windowClose: () => Promise<void>
   windowIsMaximized: () => Promise<boolean>
+  terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number }) => Promise<number>
+  terminalWrite: (ptyId: number, data: string) => Promise<void>
+  terminalResize: (ptyId: number, cols: number, rows: number) => Promise<void>
+  terminalKill: (ptyId: number) => Promise<void>
+  onTerminalData: (ptyId: number, callback: (data: string) => void) => () => void
+  onTerminalExit: (ptyId: number, callback: (data: { exitCode: number; signal?: number }) => void) => () => void
   terminalExecute: (command: string, cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>
   terminalGetCwd: () => Promise<string>
   readFile: (filePath: string) => Promise<string | null>
@@ -118,6 +133,7 @@ export interface ElectronAPI {
     context?: string
     provider?: Settings['activeProvider']
     model?: string
+    mode?: 'coding' | 'plan' | 'build' | 'bugfix'
   }) => Promise<{ text: string | null; error?: string }>
   generateImage: (payload: {
     prompt: string

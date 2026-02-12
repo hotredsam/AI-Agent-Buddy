@@ -3,12 +3,17 @@ import { spawn } from 'child_process'
 import * as os from 'os'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as pty from 'node-pty'
 import * as store from './store'
 import { sendMessageStream, checkHealth, listModels, runDiagnostics, pullModel, OllamaChatMessage, StreamMeta } from './ollama'
 import { sendOpenAIStream } from './openai'
 import { sendAnthropicStream } from './anthropic'
 import { sendGoogleStream } from './google'
 import { sendGroqStream } from './groq'
+
+// --- PTY Management ---
+const ptyProcesses = new Map<number, pty.IPty>()
+let nextPtyId = 1
 
 interface FolderEntry {
   name: string
@@ -25,11 +30,26 @@ async function generateCodeWithProvider(
   prompt: string,
   context: string,
   providerOverride?: Provider,
-  modelOverride?: string
+  modelOverride?: string,
+  mode: 'coding' | 'plan' | 'build' | 'bugfix' = 'coding'
 ): Promise<{ text: string | null; error?: string }> {
   const provider = providerOverride || settings.codingProvider || settings.activeProvider || 'ollama'
   const model = modelOverride || settings.codingModel || settings.modelName
   const apiKeys = settings.apiKeys || {}
+  const systemPromptByMode = settings.systemPrompts || {
+    chat: 'You are a helpful AI assistant.',
+    coding: 'You are a senior software engineer.',
+    plan: 'You are a technical planner.',
+    build: 'You are in build mode.',
+    bugfix: 'You are in bugfix mode.',
+    image: 'You generate image prompts.',
+  }
+  const modeSystemPrompt =
+    mode === 'plan' ? systemPromptByMode.plan :
+    mode === 'build' ? systemPromptByMode.build :
+    mode === 'bugfix' ? systemPromptByMode.bugfix :
+    systemPromptByMode.coding
+
   const userPrompt = context
     ? `${prompt}\n\nCurrent file context:\n${context}`
     : prompt
@@ -44,7 +64,7 @@ async function generateCodeWithProvider(
           stream: false,
           options: { num_ctx: settings.numCtx },
           messages: [
-            { role: 'system', content: 'You are a coding assistant. Return code-first responses.' },
+            { role: 'system', content: modeSystemPrompt },
             { role: 'user', content: userPrompt },
           ],
         }),
@@ -67,7 +87,7 @@ async function generateCodeWithProvider(
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: 'You are a coding assistant. Return code-first responses.' },
+            { role: 'system', content: modeSystemPrompt },
             { role: 'user', content: userPrompt },
           ],
         }),
@@ -89,7 +109,7 @@ async function generateCodeWithProvider(
         body: JSON.stringify({
           model,
           max_tokens: 4096,
-          system: 'You are a coding assistant. Return code-first responses.',
+          system: modeSystemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
         }),
       })
@@ -109,7 +129,7 @@ async function generateCodeWithProvider(
             contents: [
               {
                 role: 'user',
-                parts: [{ text: `You are a coding assistant. Return code-first responses.\n\n${userPrompt}` }],
+                parts: [{ text: `${modeSystemPrompt}\n\n${userPrompt}` }],
               },
             ],
           }),
@@ -130,7 +150,7 @@ async function generateCodeWithProvider(
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: 'You are a coding assistant. Return code-first responses.' },
+          { role: 'system', content: modeSystemPrompt },
           { role: 'user', content: userPrompt },
         ],
       }),
@@ -157,6 +177,8 @@ async function generateImageWithProvider(
     return { filePath: null, error: `Image generation for provider "${provider}" is not configured yet.` }
   }
   if (!apiKeys.openai) return { filePath: null, error: 'Missing OpenAI API key.' }
+  const imageSystemPrompt = settings.systemPrompts?.image || ''
+  const mergedPrompt = imageSystemPrompt ? `${imageSystemPrompt}\n\n${prompt}` : prompt
 
   try {
     const response = await fetch('https://api.openai.com/v1/images/generations', {
@@ -167,7 +189,7 @@ async function generateImageWithProvider(
       },
       body: JSON.stringify({
         model,
-        prompt,
+        prompt: mergedPrompt,
         size: '1024x1024',
       }),
     })
@@ -281,6 +303,10 @@ export function registerIpcHandlers(): void {
         role: m.role,
         content: m.content,
       }))
+      const chatSystemPrompt = settings?.systemPrompts?.chat || currentSettings.systemPrompts?.chat
+      if (chatSystemPrompt) {
+        ollamaMessages.unshift({ role: 'system', content: chatSystemPrompt })
+      }
 
       // Stream response from configured provider
       let fullResponse = ''
@@ -406,7 +432,13 @@ export function registerIpcHandlers(): void {
     'ai:generateCode',
     async (
       _event: IpcMainInvokeEvent,
-      payload: { prompt: string; context?: string; provider?: Provider; model?: string }
+      payload: {
+        prompt: string
+        context?: string
+        provider?: Provider
+        model?: string
+        mode?: 'coding' | 'plan' | 'build' | 'bugfix'
+      }
     ): Promise<{ text: string | null; error?: string }> => {
       const settings = store.getSettings()
       return generateCodeWithProvider(
@@ -414,7 +446,8 @@ export function registerIpcHandlers(): void {
         payload.prompt,
         payload.context || '',
         payload.provider,
-        payload.model
+        payload.model,
+        payload.mode || 'coding'
       )
     }
   )
@@ -705,6 +738,15 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  ipcMain.handle('system:getStats', async () => {
+    return {
+      freeMem: os.freemem(),
+      totalMem: os.totalmem(),
+      platform: os.platform(),
+      cpus: os.cpus().length,
+    }
+  })
+
   // --- Window Controls (frameless window) ---
 
   ipcMain.handle('window:minimize', async (event) => {
@@ -774,7 +816,59 @@ export function registerIpcHandlers(): void {
     return prompt
   })
 
-  // --- Terminal Handlers ---
+  // --- Terminal PTY Handlers ---
+
+  ipcMain.handle(
+    'terminal:spawn',
+    async (event: IpcMainInvokeEvent, options: { cwd?: string; cols?: number; rows?: number }): Promise<number> => {
+      const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash'
+      const ptyId = nextPtyId++
+      
+      const ptyProcess = pty.spawn(shell, [], {
+        name: 'xterm-256color',
+        cols: options.cols || 80,
+        rows: options.rows || 24,
+        cwd: options.cwd || os.homedir(),
+        env: process.env as any,
+      })
+
+      ptyProcess.onData((data) => {
+        event.sender.send(`terminal:data:${ptyId}`, data)
+      })
+
+      ptyProcess.onExit(({ exitCode, signal }) => {
+        event.sender.send(`terminal:exit:${ptyId}`, { exitCode, signal })
+        ptyProcesses.delete(ptyId)
+      })
+
+      ptyProcesses.set(ptyId, ptyProcess)
+      return ptyId
+    }
+  )
+
+  ipcMain.handle('terminal:write', async (_event, ptyId: number, data: string): Promise<void> => {
+    const ptyProcess = ptyProcesses.get(ptyId)
+    if (ptyProcess) {
+      ptyProcess.write(data)
+    }
+  })
+
+  ipcMain.handle('terminal:resize', async (_event, ptyId: number, cols: number, rows: number): Promise<void> => {
+    const ptyProcess = ptyProcesses.get(ptyId)
+    if (ptyProcess) {
+      ptyProcess.resize(cols, rows)
+    }
+  })
+
+  ipcMain.handle('terminal:kill', async (_event, ptyId: number): Promise<void> => {
+    const ptyProcess = ptyProcesses.get(ptyId)
+    if (ptyProcess) {
+      ptyProcess.kill()
+      ptyProcesses.delete(ptyId)
+    }
+  })
+
+  // --- Terminal Legacy Handlers ---
 
   ipcMain.handle(
     'terminal:execute',

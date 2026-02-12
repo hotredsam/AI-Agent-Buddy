@@ -87,13 +87,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('workspace:renamePath', targetPath, nextName),
   deleteWorkspacePath: (targetPath: string) => ipcRenderer.invoke('workspace:deletePath', targetPath),
 
+  // --- System ---
+  getSystemStats: () => ipcRenderer.invoke('system:getStats'),
+
   // --- Window Controls (frameless) ---
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
-  // --- Terminal ---
+  // --- Terminal (PTY) ---
+  terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number }) =>
+    ipcRenderer.invoke('terminal:spawn', options),
+  terminalWrite: (ptyId: number, data: string) =>
+    ipcRenderer.invoke('terminal:write', ptyId, data),
+  terminalResize: (ptyId: number, cols: number, rows: number) =>
+    ipcRenderer.invoke('terminal:resize', ptyId, cols, rows),
+  terminalKill: (ptyId: number) =>
+    ipcRenderer.invoke('terminal:kill', ptyId),
+  onTerminalData: (ptyId: number, callback: (data: string) => void) => {
+    const handler = (_event: any, data: string) => callback(data)
+    ipcRenderer.on(`terminal:data:${ptyId}`, handler)
+    return () => ipcRenderer.removeListener(`terminal:data:${ptyId}`, handler)
+  },
+  onTerminalExit: (ptyId: number, callback: (data: { exitCode: number; signal?: number }) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on(`terminal:exit:${ptyId}`, handler)
+    return () => ipcRenderer.removeListener(`terminal:exit:${ptyId}`, handler)
+  },
+
+  // --- Terminal Legacy ---
   terminalExecute: (command: string, cwd: string) =>
     ipcRenderer.invoke('terminal:execute', command, cwd),
   terminalGetCwd: () => ipcRenderer.invoke('terminal:getCwd'),
@@ -102,7 +125,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readFile: (filePath: string) => ipcRenderer.invoke('files:readFile', filePath),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('files:writeFile', filePath, content),
-  generateCode: (payload: { prompt: string; context?: string; provider?: string; model?: string }) =>
+  generateCode: (payload: {
+    prompt: string
+    context?: string
+    provider?: string
+    model?: string
+    mode?: 'coding' | 'plan' | 'build' | 'bugfix'
+  }) =>
     ipcRenderer.invoke('ai:generateCode', payload),
   generateImage: (payload: { prompt: string; provider?: string; model?: string }) =>
     ipcRenderer.invoke('ai:generateImage', payload),
