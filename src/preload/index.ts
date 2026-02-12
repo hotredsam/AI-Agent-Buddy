@@ -49,6 +49,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('chat:error', handler)
   },
 
+  onContextInfo: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('chat:contextInfo', handler)
+    return () => ipcRenderer.removeListener('chat:contextInfo', handler)
+  },
+
   // --- User Files ---
   listFiles: () => ipcRenderer.invoke('files:list'),
   importFile: () => ipcRenderer.invoke('files:import'),

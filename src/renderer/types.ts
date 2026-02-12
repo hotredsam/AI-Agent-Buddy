@@ -54,6 +54,12 @@ export interface ElectronAPI {
   onToken: (callback: (data: { conversationId: string; token: string }) => void) => () => void
   onDone: (callback: (data: { conversationId: string }) => void) => () => void
   onError: (callback: (data: { conversationId: string; error: string }) => void) => () => void
+  onContextInfo: (callback: (data: {
+    conversationId: string
+    requestedCtx: number
+    effectiveCtx: number
+    wasClamped: boolean
+  }) => void) => () => void
   listFiles: () => Promise<UserFile[]>
   importFile: () => Promise<UserFile | null>
   deleteFile: (fileName: string) => Promise<boolean>

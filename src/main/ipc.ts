@@ -1,6 +1,6 @@
 import { ipcMain, IpcMainInvokeEvent, dialog, shell } from 'electron'
 import * as store from './store'
-import { sendMessageStream, checkHealth, listModels, runDiagnostics, OllamaChatMessage } from './ollama'
+import { sendMessageStream, checkHealth, listModels, runDiagnostics, OllamaChatMessage, StreamMeta } from './ollama'
 
 /**
  * Registers all IPC handlers for the application.
@@ -85,7 +85,16 @@ export function registerIpcHandlers(): void {
           effectiveSettings.ollamaEndpoint,
           effectiveSettings.modelName,
           ollamaMessages,
-          effectiveSettings.numCtx
+          effectiveSettings.numCtx,
+          (meta: StreamMeta) => {
+            // Notify renderer of effective context window
+            event.sender.send('chat:contextInfo', {
+              conversationId,
+              requestedCtx: meta.requestedCtx,
+              effectiveCtx: meta.effectiveCtx,
+              wasClamped: meta.wasClamped,
+            })
+          }
         )
 
         for await (const token of stream) {

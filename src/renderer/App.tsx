@@ -35,6 +35,13 @@ export default function App() {
   const [streamingText, setStreamingText] = useState('')
   const streamingConvIdRef = useRef<string | null>(null)
 
+  // ---- Context window state ----
+  const [contextInfo, setContextInfo] = useState<{
+    requestedCtx: number
+    effectiveCtx: number
+    wasClamped: boolean
+  } | null>(null)
+
   // ---- Toast state ----
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
@@ -140,10 +147,27 @@ export default function App() {
       }
     })
 
+    const unsubContextInfo = window.electronAPI.onContextInfo((data) => {
+      if (data.conversationId === streamingConvIdRef.current) {
+        setContextInfo({
+          requestedCtx: data.requestedCtx,
+          effectiveCtx: data.effectiveCtx,
+          wasClamped: data.wasClamped,
+        })
+        if (data.wasClamped) {
+          addToast(
+            `Context window clamped: ${data.requestedCtx.toLocaleString()} → ${data.effectiveCtx.toLocaleString()} tokens. Reduce in Settings to avoid this.`,
+            'warning'
+          )
+        }
+      }
+    })
+
     return () => {
       unsubToken()
       unsubDone()
       unsubError()
+      unsubContextInfo()
     }
   }, [addToast])
 
@@ -288,6 +312,8 @@ export default function App() {
               messages={messages}
               streamingText={streamingText}
               isStreaming={isStreaming}
+              contextInfo={contextInfo}
+              modelName={settings.modelName}
             />
             <Composer
               onSend={handleSendMessage}

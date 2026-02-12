@@ -1,15 +1,22 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import type { Message } from '../types'
 
 interface ChatPaneProps {
   messages: Message[]
   streamingText: string
   isStreaming: boolean
+  contextInfo?: {
+    requestedCtx: number
+    effectiveCtx: number
+    wasClamped: boolean
+  } | null
+  modelName?: string
 }
 
 /**
  * Lightweight inline markdown renderer.
- * Handles: code blocks (```), inline code (`), bold (**), italic (*).
+ * Handles: code blocks (```), inline code (`), bold (**), italic (*),
+ * blockquotes (>), unordered lists (- or *), ordered lists (1.).
  * Returns an array of React nodes.
  */
 function renderMarkdown(text: string): React.ReactNode[] {
@@ -23,20 +30,99 @@ function renderMarkdown(text: string): React.ReactNode[] {
   while ((match = codeBlockRegex.exec(text)) !== null) {
     // Render text before this code block
     if (match.index > lastIndex) {
-      nodes.push(...renderInline(text.slice(lastIndex, match.index), nodes.length))
+      nodes.push(...renderBlocks(text.slice(lastIndex, match.index), nodes.length))
     }
-    // Render code block
+    // Render code block with copy button
+    const lang = match[1] || ''
+    const code = match[2]
     nodes.push(
-      <pre key={`cb-${nodes.length}`}>
-        <code>{match[2]}</code>
-      </pre>
+      <CodeBlock key={`cb-${nodes.length}`} language={lang} code={code} />
     )
     lastIndex = match.index + match[0].length
   }
 
   // Render remaining text after last code block
   if (lastIndex < text.length) {
-    nodes.push(...renderInline(text.slice(lastIndex), nodes.length))
+    nodes.push(...renderBlocks(text.slice(lastIndex), nodes.length))
+  }
+
+  return nodes
+}
+
+/**
+ * Processes block-level elements: blockquotes, lists, then inline
+ */
+function renderBlocks(text: string, keyOffset: number): React.ReactNode[] {
+  const nodes: React.ReactNode[] = []
+  const lines = text.split('\n')
+  let i = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    // Blockquote
+    if (line.startsWith('> ')) {
+      const quoteLines: string[] = []
+      while (i < lines.length && lines[i].startsWith('> ')) {
+        quoteLines.push(lines[i].slice(2))
+        i++
+      }
+      nodes.push(
+        <blockquote key={`bq-${keyOffset}-${i}`} className="md-blockquote">
+          {renderInline(quoteLines.join('\n'), keyOffset + i)}
+        </blockquote>
+      )
+      continue
+    }
+
+    // Unordered list (- or * prefix)
+    if (/^[\-\*]\s/.test(line)) {
+      const items: string[] = []
+      while (i < lines.length && /^[\-\*]\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^[\-\*]\s/, ''))
+        i++
+      }
+      nodes.push(
+        <ul key={`ul-${keyOffset}-${i}`} className="md-list">
+          {items.map((item, idx) => (
+            <li key={idx}>{renderInline(item, keyOffset + i + idx)}</li>
+          ))}
+        </ul>
+      )
+      continue
+    }
+
+    // Ordered list (1. 2. etc)
+    if (/^\d+\.\s/.test(line)) {
+      const items: string[] = []
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^\d+\.\s/, ''))
+        i++
+      }
+      nodes.push(
+        <ol key={`ol-${keyOffset}-${i}`} className="md-list">
+          {items.map((item, idx) => (
+            <li key={idx}>{renderInline(item, keyOffset + i + idx)}</li>
+          ))}
+        </ol>
+      )
+      continue
+    }
+
+    // Regular text — pass through inline renderer
+    if (line.trim()) {
+      nodes.push(
+        <span key={`ln-${keyOffset}-${i}`}>
+          {renderInline(line, keyOffset + i)}
+        </span>
+      )
+      if (i < lines.length - 1) {
+        nodes.push(<br key={`br-${keyOffset}-${i}`} />)
+      }
+    } else if (i > 0 && i < lines.length - 1) {
+      nodes.push(<br key={`br-${keyOffset}-${i}`} />)
+    }
+    i++
   }
 
   return nodes
@@ -73,17 +159,104 @@ function renderInline(text: string, keyOffset: number): React.ReactNode[] {
   return nodes
 }
 
-export default function ChatPane({ messages, streamingText, isStreaming }: ChatPaneProps) {
-  const bottomRef = useRef<HTMLDivElement>(null)
+/**
+ * Code block component with copy-to-clipboard button and language tag
+ */
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false)
 
-  // Auto-scroll to bottom
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Fallback silently
+    }
+  }
+
+  return (
+    <div className="code-block-wrapper">
+      <div className="code-block-header">
+        {language && <span className="code-block-lang">{language}</span>}
+        <button className="code-block-copy" onClick={handleCopy}>
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+      <pre>
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
+}
+
+/**
+ * Formats a context window size for display (e.g. 8192 -> "8K")
+ */
+function formatCtx(n: number): string {
+  if (n >= 1024) return `${(n / 1024).toFixed(n % 1024 === 0 ? 0 : 1)}K`
+  return n.toString()
+}
+
+export default function ChatPane({
+  messages,
+  streamingText,
+  isStreaming,
+  contextInfo,
+  modelName,
+}: ChatPaneProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const [autoScroll, setAutoScroll] = useState(true)
+
+  // Smart auto-scroll: pause when user scrolls up, resume when near bottom
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setAutoScroll(distanceFromBottom < 80)
+  }, [])
+
+  // Auto-scroll to bottom when new content arrives (only if enabled)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamingText])
+    if (autoScroll) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messages, streamingText, autoScroll])
+
+  // Render the top info bar
+  const topBar = (
+    <div className="chat-topbar">
+      {modelName && (
+        <span className="model-badge" title="Active model">
+          {modelName}
+        </span>
+      )}
+      {contextInfo && (
+        <span
+          className={`ctx-badge ${contextInfo.wasClamped ? 'clamped' : ''}`}
+          title={
+            contextInfo.wasClamped
+              ? `Requested ${formatCtx(contextInfo.requestedCtx)} but clamped to ${formatCtx(contextInfo.effectiveCtx)}. Lower context in Settings to avoid this.`
+              : `Context window: ${formatCtx(contextInfo.effectiveCtx)} tokens`
+          }
+        >
+          ctx {formatCtx(contextInfo.effectiveCtx)}
+          {contextInfo.wasClamped && (
+            <span className="ctx-clamp-indicator"> &#x26A0;</span>
+          )}
+        </span>
+      )}
+      {isStreaming && (
+        <span className="streaming-badge">Generating...</span>
+      )}
+    </div>
+  )
 
   if (messages.length === 0 && !isStreaming) {
     return (
       <div className="chat-pane">
+        {topBar}
         <div className="chat-empty">
           <span className="icon">&#x1F4AC;</span>
           <p>Start a conversation</p>
@@ -94,9 +267,17 @@ export default function ChatPane({ messages, streamingText, isStreaming }: ChatP
 
   return (
     <div className="chat-pane">
-      <div className="chat-messages">
+      {topBar}
+
+      <div className="chat-messages" ref={scrollRef} onScroll={handleScroll}>
         {messages.map((msg) => (
           <div key={msg.id} className={`message-row ${msg.role}`}>
+            <div
+              className="message-avatar"
+              dangerouslySetInnerHTML={{
+                __html: msg.role === 'user' ? '&#x1F464;' : '&#x1F916;',
+              }}
+            />
             <div className="message-bubble">
               {renderMarkdown(msg.content)}
             </div>
@@ -105,6 +286,10 @@ export default function ChatPane({ messages, streamingText, isStreaming }: ChatP
 
         {isStreaming && streamingText && (
           <div className="message-row assistant">
+            <div
+              className="message-avatar"
+              dangerouslySetInnerHTML={{ __html: '&#x1F916;' }}
+            />
             <div className="message-bubble">
               {renderMarkdown(streamingText)}
               <span className="streaming-cursor" />
@@ -114,6 +299,10 @@ export default function ChatPane({ messages, streamingText, isStreaming }: ChatP
 
         {isStreaming && !streamingText && (
           <div className="message-row assistant">
+            <div
+              className="message-avatar"
+              dangerouslySetInnerHTML={{ __html: '&#x1F916;' }}
+            />
             <div className="message-bubble">
               <span className="streaming-cursor" />
             </div>
@@ -122,6 +311,20 @@ export default function ChatPane({ messages, streamingText, isStreaming }: ChatP
 
         <div ref={bottomRef} />
       </div>
+
+      {/* Scroll-to-bottom FAB when user scrolls up during streaming */}
+      {!autoScroll && (
+        <button
+          className="scroll-to-bottom"
+          onClick={() => {
+            bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+            setAutoScroll(true)
+          }}
+          title="Scroll to bottom"
+        >
+          &#x2193;
+        </button>
+      )}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import type { Settings, ThemeName } from '../types'
-import { THEMES, THEME_NAMES } from '../themes'
+import { THEMES, THEME_NAMES, applyTheme } from '../themes'
 
 interface SettingsPaneProps {
   settings: Settings
@@ -25,8 +25,15 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   }, [settings])
 
   const handleChange = (field: keyof Settings, value: string | number) => {
-    setForm((prev) => ({ ...prev, [field]: value }))
+    const updated = { ...form, [field]: value }
+    setForm(updated)
     setSaved(false)
+
+    // Live-apply theme on click (no Save needed for themes)
+    if (field === 'theme') {
+      applyTheme(value as ThemeName)
+      onSave(updated)
+    }
   }
 
   const handleTestConnection = async () => {
@@ -76,7 +83,15 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
         </div>
 
         <div className="settings-field">
-          <label htmlFor="num-ctx">Context Window Size</label>
+          <label htmlFor="num-ctx">
+            Context Window Size
+            <span
+              className="settings-help-icon"
+              title="How many tokens the model can process at once. Higher values use more GPU memory. If your requested size exceeds available memory, the app automatically falls back to a smaller size. You'll see a warning badge in the chat when this happens."
+            >
+              ?
+            </span>
+          </label>
           <input
             id="num-ctx"
             type="number"
@@ -85,10 +100,13 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             min={256}
             step={256}
           />
+          <span className="settings-field-hint">
+            Recommended: 4096-8192 for most models. Higher = more memory.
+          </span>
         </div>
 
         <div className="settings-field">
-          <label>Theme</label>
+          <label>Theme <span className="settings-hint-inline">(click to apply)</span></label>
           <div className="theme-grid">
             {THEME_NAMES.map((name) => (
               <button
@@ -182,7 +200,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
               </div>
               <div className="diag-row">
                 <span className={`status-dot ${diagResult.modelFound ? 'ok' : 'fail'}`} />
-                <span>Model "{form.modelName}": {diagResult.modelFound ? 'Available' : 'Not found'}</span>
+                <span>Model &ldquo;{form.modelName}&rdquo;: {diagResult.modelFound ? 'Available' : 'Not found'}</span>
               </div>
               {diagResult.availableModels.length > 0 && (
                 <div className="diag-models">

@@ -25,15 +25,24 @@ interface OllamaStreamChunk {
 // Context window fallback sizes to try if the requested numCtx fails
 const CTX_FALLBACKS = [32768, 16384, 8192, 4096, 2048]
 
+export interface StreamMeta {
+  requestedCtx: number
+  effectiveCtx: number
+  wasClamped: boolean
+}
+
 /**
  * Sends a chat message to Ollama and streams back tokens via an async generator.
  * If the requested numCtx causes an error, it retries with progressively smaller values.
+ * The `onMeta` callback is called once streaming begins successfully, reporting the
+ * effective context window (which may differ from requested if clamping occurred).
  */
 export async function* sendMessageStream(
   endpoint: string,
   model: string,
   messages: OllamaChatMessage[],
-  numCtx: number
+  numCtx: number,
+  onMeta?: (meta: StreamMeta) => void
 ): AsyncGenerator<string, void, unknown> {
   const url = `${endpoint}/api/chat`
 
@@ -75,6 +84,15 @@ export async function* sendMessageStream(
 
       if (!response.body) {
         throw new Error('Response body is null - streaming not supported')
+      }
+
+      // Report effective context info
+      if (onMeta) {
+        onMeta({
+          requestedCtx: numCtx,
+          effectiveCtx: ctx,
+          wasClamped: ctx !== numCtx,
+        })
       }
 
       // Stream the response using async iteration over the ReadableStream
@@ -212,6 +230,23 @@ export async function listModels(endpoint: string): Promise<string[]> {
     return []
   } catch {
     return []
+  }
+}
+
+/**
+ * Unloads the currently loaded model from Ollama to free GPU/RAM.
+ * Called on app quit to prevent the model lingering in memory.
+ */
+export async function unloadModel(endpoint: string, model: string): Promise<void> {
+  try {
+    await fetch(`${endpoint}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, keep_alive: 0 }),
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch {
+    // Best-effort: if Ollama is already gone, ignore
   }
 }
 

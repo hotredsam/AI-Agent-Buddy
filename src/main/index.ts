@@ -1,6 +1,8 @@
 import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { registerIpcHandlers } from './ipc'
+import { unloadModel } from './ollama'
+import { getSettings } from './store'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -49,6 +51,16 @@ function createWindow(): void {
 app.on('ready', () => {
   registerIpcHandlers()
   createWindow()
+})
+
+// Unload the model from Ollama before quitting to free GPU/RAM
+app.on('before-quit', async () => {
+  try {
+    const settings = getSettings()
+    await unloadModel(settings.ollamaEndpoint, settings.modelName)
+  } catch {
+    // Best-effort cleanup
+  }
 })
 
 app.on('window-all-closed', () => {
