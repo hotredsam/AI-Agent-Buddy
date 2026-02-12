@@ -8,7 +8,8 @@
     "build": "vite build && tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json",
     "electron": "electron .",
     "start": "npm run build && npm run electron",
-    "dev:electron": "node scripts/dev.mjs"
+    "dev:electron": "node scripts/dev.mjs",
+    "test:e2e": "playwright test"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +25,7 @@
     "xterm-addon-fit": "^0.8.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/uuid": "^10.0.0",

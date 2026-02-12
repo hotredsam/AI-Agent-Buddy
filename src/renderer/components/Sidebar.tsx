@@ -147,24 +147,28 @@ export default function Sidebar({
         <button
           className={`sidebar-nav-btn ${view === 'chat' ? 'active' : ''}`}
           onClick={() => onChangeView('chat')}
+          title="Chat"
         >
           Chat
         </button>
         <button
           className={`sidebar-nav-btn ${view === 'code' ? 'active' : ''}`}
           onClick={() => onChangeView('code')}
+          title="Code Editor"
         >
           Code
         </button>
         <button
           className={`sidebar-nav-btn ${view === 'workspace' ? 'active' : ''}`}
           onClick={() => onChangeView('workspace')}
+          title="Files"
         >
           Files
         </button>
         <button
           className={`sidebar-nav-btn ${view === 'settings' ? 'active' : ''}`}
           onClick={() => onChangeView('settings')}
+          title="Settings"
         >
           Settings
         </button>
