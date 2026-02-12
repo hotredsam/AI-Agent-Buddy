@@ -135,6 +135,36 @@ Steps for Monaco integration:
 4. Wire up language detection, file save, AI code injection
 5. Add tab support for multiple open files
 
+### Phase 5 - Agent File Creation & Full File Management
+**AI agent can create files + OneDrive-like file management in the Library.**
+
+#### Agent File Creation
+- AI agent can create new files via IPC (e.g. `files:createFile` handler)
+- When agent generates code/content, it can save to a file that auto-appears in the Library
+- New IPC channel: `files:createFile(fileName, content, directory?)` → creates file on disk
+- Library/Files section auto-refreshes when new files are created
+- Agent should be able to create files in the project workspace or a configurable output directory
+
+#### Full File Management (OneDrive-style)
+Each file in the Library/Files section should have a context menu or action buttons with:
+1. **Download** - Save/export file to a user-chosen location (Save As dialog)
+2. **Edit** - Open file in the code editor (EditorPane / Monaco)
+3. **Delete** - Remove file from disk (with confirmation dialog)
+4. **Rename** - Rename file in-place (inline rename input)
+5. **Move** - Move file to a different folder (folder picker dialog)
+6. **Duplicate** - Copy file with a new name (e.g. `file_copy.txt`)
+7. **Copy Path** - Copy the full file path to clipboard
+8. **View Details** - Show file size, created date, modified date, file type
+9. **Open in Explorer** - Open containing folder in OS file explorer (`shell.showItemInFolder`)
+10. **Open Externally** - Open file with the system default app (`shell.openPath`)
+
+Implementation approach:
+1. Add new IPC handlers: `files:createFile`, `files:deleteFile`, `files:renameFile`, `files:moveFile`, `files:duplicateFile`, `files:getFileInfo`, `files:showInExplorer`, `files:openExternal`
+2. Update `WorkspacePane.tsx` to show action buttons/context menu per file
+3. Add confirmation dialogs for destructive actions (delete)
+4. Update preload bridge with new file management APIs
+5. Wire agent file creation into the chat/AI response pipeline
+
 ### Other Remaining Tasks
 1. **Cloud provider API integration** - Connect to OpenAI/Anthropic/Google/Groq using stored keys
 2. **AI auto-execution** - Use `allowAICodeExec` permission for auto-running code
@@ -143,10 +173,45 @@ Steps for Monaco integration:
 5. **Token usage tracking** - Count tokens sent/received
 6. **GPU memory indicator** - Show VRAM usage
 7. **Conversation export/import** - JSON export
-8. **File editing from Library** - Click library file to open in editor
-9. **System prompt customization** - Per-conversation system prompts
-10. **Multi-tab editor** - Open multiple files in tabs
+8. **System prompt customization** - Per-conversation system prompts
 
 ---
 
-*Last updated: Phase 3 completion*
+## Handoff Notes for Codex / Next Session
+
+**Where we left off**: Phase 3 is fully complete and committed. PROGRESS.md is updated with Phase 4 (Monaco editor) and Phase 5 (Agent file creation + file management) plans.
+
+**Next steps in priority order**:
+
+1. **Phase 4 - Monaco Editor** (start here):
+   - `npm install monaco-editor @monaco-editor/react`
+   - Replace `<textarea>` in `src/renderer/components/EditorPane.tsx` with `<Editor>` from `@monaco-editor/react`
+   - Create a custom dark Monaco theme that matches the app's glass design (CSS vars are in `src/renderer/styles/globals.css`, theme system in `src/renderer/themes.ts`)
+   - Wire up: language auto-detection from file extension, Ctrl+S save, AI code injection (the `onSendToEditor` callback in `App.tsx` sets `editorContent`)
+   - Add multi-tab support (open multiple files in tabs)
+   - **Key files**: `EditorPane.tsx`, `App.tsx` (editor state + handlers), `globals.css` (styling)
+
+2. **Phase 5 - Agent File Creation + File Management**:
+   - Add IPC handlers in `src/main/ipc.ts` for createFile, deleteFile, renameFile, moveFile, duplicateFile, getFileInfo, showInExplorer, openExternal
+   - Update preload in `src/preload/index.ts` with new bridge methods
+   - Update types in `src/renderer/types.ts` with new ElectronAPI methods
+   - Update `src/renderer/components/WorkspacePane.tsx` to show per-file action buttons or right-click context menu
+   - Add a way for the AI chat responses to trigger file creation (button on code blocks: "Save as File")
+
+**Architecture reminders**:
+- All IPC goes through `contextBridge` (preload pattern). Never use `nodeIntegration: true`.
+- Build: `npm run build` (runs both vite build + tsc). Dev: `npm run dev`.
+- The app uses a custom frameless window with `src/renderer/components/Titlebar.tsx`.
+- Settings persist as JSON via `src/main/store.ts`.
+- 10 themes defined in `src/renderer/themes.ts`, CSS vars injected via `applyTheme()`.
+- Main process + preload are CommonJS (`"module": "commonjs"`). Renderer is ESM.
+- `strict: true` in all three tsconfigs. No implicit any.
+
+**Comprehensive handoff file**: See `CODEX_HANDOFF.md` for complete implementation guide with code snippets, file-by-file instructions, testing checklist, and common pitfalls.
+
+3. **Task 3 (if time) - Cloud Provider APIs**:
+   - Create `src/main/openai.ts`, `anthropic.ts`, `google.ts`, `groq.ts` streaming clients
+   - Update `ipc.ts` `chat:sendMessage` to route by `settings.activeProvider`
+   - API keys are already stored via Settings (accessed as `settings.apiKeys.openai`, etc.)
+
+*Last updated: Phase 3 complete, CODEX_HANDOFF.md created for Codex handoff*
