@@ -25,7 +25,7 @@ interface FolderEntry {
 
 type Provider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
 
-async function generateCodeWithProvider(
+export async function generateCodeWithProvider(
   settings: store.Settings,
   prompt: string,
   context: string,

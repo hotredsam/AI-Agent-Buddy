@@ -36,11 +36,51 @@ test.describe('Application Launch', () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
 
-    // Click Settings button in sidebar
+    // Click Code button
+    await window.locator('button[title="Code Editor"]').click();
+    await expect(window.locator('.code-layout')).toBeVisible();
+
+    // Click Files button
+    await window.locator('button[title="Files"]').click();
+    await expect(window.locator('.workspace-pane-container')).toBeVisible();
+
+    // Click Settings button
     await window.locator('button[title="Settings"]').click();
+    await expect(window.locator('.settings-pane')).toBeVisible();
+  });
+
+  test('chat composer works', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    const textarea = window.locator('.composer-textarea');
+    await textarea.fill('Hello, AI Agent!');
+    await expect(textarea).toHaveValue('Hello, AI Agent!');
     
-    // Verify Settings pane is visible
-    const settingsPane = await window.locator('.settings-pane');
-    await expect(settingsPane).toBeVisible();
+    // Check if send button is enabled
+    const sendBtn = window.locator('.composer-send-btn');
+    await expect(sendBtn).not.toBeDisabled();
+  });
+
+  test('editor can create new file', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+    
+    // Welcome screen should be visible
+    const welcome = window.locator('.editor-welcome');
+    await expect(welcome).toBeVisible();
+
+    // Click "New File" in welcome screen
+    await window.locator('button:has-text("New File...")').click();
+
+    // Editor should be visible
+    await expect(window.locator('.editor-monaco')).toBeVisible();
+    
+    // Tab should be created
+    const tab = window.locator('.editor-tab.active');
+    await expect(tab).toBeVisible();
+    await expect(tab).toContainText('untitled-1.txt');
   });
 });
