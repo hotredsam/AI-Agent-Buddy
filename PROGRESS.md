@@ -117,16 +117,35 @@
 ---
 
 ## What's Left To Do
-1. **Cloud provider API integration** - Currently only Ollama works. Need to add fetch calls to OpenAI/Anthropic/Google/Groq APIs using stored keys
-2. **AI auto-execution** - Use the `allowAICodeExec` permission to let AI run generated code automatically
-3. **Monaco Editor** - Replace textarea with Monaco for syntax highlighting, intellisense
-4. **xterm.js + node-pty** - Replace basic terminal with real PTY terminal
-5. **Agent orchestration** - Use the agent configs in agents.ts for multi-step tasks
-6. **Token usage tracking** - Count tokens sent/received
-7. **GPU memory indicator** - Show VRAM usage
-8. **Conversation export/import** - JSON export
-9. **File editing from Library** - Click a library file to open in editor
-10. **System prompt customization** - Per-conversation system prompts
+
+### Phase 4 - PRIORITY: Embed VS Code as Editor (Next Session)
+**Plan: Replace textarea editor with a full VS Code instance using `@vscode/vscode-web` or embedded Code OSS.**
+
+Approach options (pick one):
+1. **Option A: `@vscode/monaco-editor` (quick win)** - `npm install monaco-editor` then use `<MonacoEditor>` React component. Gets syntax highlighting, intellisense, minimap, multi-cursor. Easiest path.
+2. **Option B: Embed full VS Code via iframe** - Use `code-server` (https://github.com/coder/code-server) running locally, embed in an iframe. Gets full VS Code with extensions.
+3. **Option C: Build with Theia** - Eclipse Theia is a VS Code-compatible IDE framework built for embedding. More work but most customizable.
+
+**Recommended: Option A (Monaco) first, then upgrade to Option B later.**
+
+Steps for Monaco integration:
+1. `npm install monaco-editor @monaco-editor/react`
+2. Replace `<textarea>` in `EditorPane.tsx` with `<Editor>` from `@monaco-editor/react`
+3. Configure theme to match app's dark glass design (custom Monaco theme)
+4. Wire up language detection, file save, AI code injection
+5. Add tab support for multiple open files
+
+### Other Remaining Tasks
+1. **Cloud provider API integration** - Connect to OpenAI/Anthropic/Google/Groq using stored keys
+2. **AI auto-execution** - Use `allowAICodeExec` permission for auto-running code
+3. **xterm.js + node-pty** - Replace basic terminal with real PTY terminal
+4. **Agent orchestration** - Use agent configs for multi-step tasks
+5. **Token usage tracking** - Count tokens sent/received
+6. **GPU memory indicator** - Show VRAM usage
+7. **Conversation export/import** - JSON export
+8. **File editing from Library** - Click library file to open in editor
+9. **System prompt customization** - Per-conversation system prompts
+10. **Multi-tab editor** - Open multiple files in tabs
 
 ---
 
