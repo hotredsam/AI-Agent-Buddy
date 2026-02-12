@@ -133,13 +133,81 @@ body::before {
   border-radius: var(--radius-xs);
 }
 
-/* ==================== APP LAYOUT ==================== */
-.app-layout {
+/* ==================== CUSTOM TITLEBAR ==================== */
+.custom-titlebar {
   display: flex;
+  align-items: center;
+  height: 32px;
+  background: var(--glass-sidebar);
+  border-bottom: 1px solid var(--border-hairline);
+  flex-shrink: 0;
+  z-index: 100;
+  user-select: none;
+}
+
+.titlebar-drag-region {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding-left: var(--space-md);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-btn {
+  width: 46px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.titlebar-btn:hover {
+  background: var(--glass-input-hover);
+  color: var(--text-primary);
+}
+.titlebar-btn.close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* ==================== APP ROOT ==================== */
+.app-root {
+  display: flex;
+  flex-direction: column;
   height: 100%;
   width: 100%;
   position: relative;
   z-index: 1;
+}
+
+/* ==================== APP LAYOUT ==================== */
+.app-layout {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  position: relative;
+  min-height: 0;
 }
 
 /* ==================== SIDEBAR ==================== */
@@ -448,8 +516,6 @@ body::before {
   padding: 6px var(--space-lg);
   max-width: 100%;
   animation: msg-fade-in var(--duration-normal) var(--ease-out);
-  gap: var(--space-sm);
-  align-items: flex-start;
 }
 .message-row.user {
   justify-content: flex-end;
@@ -458,23 +524,35 @@ body::before {
   justify-content: flex-start;
 }
 
-/* Message avatar */
+/* Message content wrapper: bubble + avatar stacked */
+.message-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 72%;
+}
+.message-row.user .message-content {
+  align-items: flex-end;
+}
+
+/* Message avatar: below the bubble */
 .message-avatar {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
   border-radius: var(--radius-full);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 12px;
   background: var(--glass-input);
   border: 1px solid var(--border-hairline);
-  flex-shrink: 0;
   margin-top: 4px;
+  margin-left: 8px;
 }
 .message-row.user .message-avatar {
-  order: 2;
+  margin-left: 0;
+  margin-right: 8px;
 }
 
 @keyframes msg-fade-in {
@@ -483,7 +561,7 @@ body::before {
 }
 
 .message-bubble {
-  max-width: 72%;
+  max-width: 100%;
   padding: 12px 18px;
   border-radius: var(--radius-lg);
   font-size: 14px;
@@ -1345,4 +1423,147 @@ body::before {
 }
 .sidebar-search-clear:hover {
   color: var(--text-primary);
+}
+
+/* ==================== SETTINGS CARD HEADER ==================== */
+.settings-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-lg);
+}
+.settings-card-header h2 {
+  margin-bottom: 0;
+}
+
+/* Live status indicator (always visible in settings header) */
+.live-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: var(--glass-input);
+  border: 1px solid var(--border-hairline);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  user-select: none;
+}
+.live-status:hover {
+  background: var(--glass-input-hover);
+  border-color: var(--border-subtle);
+}
+.live-status-text {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Larger status dot for info cards */
+.status-dot-lg {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  transition: all var(--duration-normal) var(--ease-out);
+}
+.status-dot-lg.ok {
+  background: var(--success);
+  box-shadow: 0 0 10px rgba(99, 230, 190, 0.5);
+}
+.status-dot-lg.fail {
+  background: var(--danger);
+  box-shadow: 0 0 10px rgba(255, 107, 122, 0.5);
+}
+.status-dot-lg.unknown {
+  background: var(--text-tertiary);
+}
+
+/* ==================== SETTINGS INFO ROW (horizontal cards) ==================== */
+.settings-info-row {
+  display: flex;
+  gap: var(--space-md);
+  width: 100%;
+  max-width: 800px;
+  margin-top: var(--space-lg);
+}
+
+.settings-info-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  background: var(--glass-bg);
+  backdrop-filter: var(--blur-md);
+  -webkit-backdrop-filter: var(--blur-md);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--duration-normal) var(--ease-out);
+  overflow: hidden;
+}
+.settings-info-card:hover {
+  flex: 1.5;
+  background: var(--glass-bg-strong);
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-md);
+}
+.settings-info-card h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+}
+.settings-info-card p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* Info card icon (emoji or status dot wrapper) */
+.info-card-icon {
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--glass-input);
+  border: 1px solid var(--border-hairline);
+  flex-shrink: 0;
+}
+
+/* Mini diagnostics results inside info card */
+.diag-results-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.diag-results-mini .diag-row {
+  font-size: 11px;
+  justify-content: center;
+}
+
+.diag-models-mini {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: 'SF Mono', 'Consolas', monospace;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== THEME SWATCH EMOJI ==================== */
+.theme-swatch-emoji {
+  font-size: 14px;
+  margin-right: 2px;
+  line-height: 1;
 }

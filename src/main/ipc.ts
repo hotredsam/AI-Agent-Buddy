@@ -1,4 +1,4 @@
-import { ipcMain, IpcMainInvokeEvent, dialog, shell } from 'electron'
+import { ipcMain, IpcMainInvokeEvent, dialog, shell, BrowserWindow } from 'electron'
 import * as store from './store'
 import { sendMessageStream, checkHealth, listModels, runDiagnostics, OllamaChatMessage, StreamMeta } from './ollama'
 
@@ -224,6 +224,38 @@ export function registerIpcHandlers(): void {
     const dir = store.getUserFilesPath()
     shell.openPath(dir)
   })
+
+  // --- Window Controls (frameless window) ---
+
+  ipcMain.handle('window:minimize', async (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+
+  ipcMain.handle('window:maximize', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win?.isMaximized()) {
+      win.unmaximize()
+    } else {
+      win?.maximize()
+    }
+  })
+
+  ipcMain.handle('window:close', async (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+
+  ipcMain.handle('window:isMaximized', async (event): Promise<boolean> => {
+    return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false
+  })
+
+  // --- Drag-Drop File Import ---
+
+  ipcMain.handle(
+    'files:importByPath',
+    async (_event: IpcMainInvokeEvent, filePath: string): Promise<store.UserFile | null> => {
+      return store.importUserFile(filePath)
+    }
+  )
 
   // --- Cloud Checkpoint ---
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import type { Settings, ThemeName } from '../types'
 import { THEMES, THEME_NAMES, applyTheme } from '../themes'
 
@@ -12,6 +12,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown')
   const [testing, setTesting] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [checkpointCopied, setCheckpointCopied] = useState(false)
   const [diagResult, setDiagResult] = useState<{
     serverReachable: boolean
     availableModels: string[]
@@ -23,6 +24,22 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   useEffect(() => {
     setForm({ ...settings })
   }, [settings])
+
+  // Live connection status: check on mount and every 30s
+  const checkConnection = useCallback(async () => {
+    try {
+      const result = await window.electronAPI.checkHealth()
+      setConnectionStatus(result ? 'ok' : 'fail')
+    } catch {
+      setConnectionStatus('fail')
+    }
+  }, [])
+
+  useEffect(() => {
+    checkConnection()
+    const interval = setInterval(checkConnection, 30000)
+    return () => clearInterval(interval)
+  }, [checkConnection])
 
   const handleChange = (field: keyof Settings, value: string | number) => {
     const updated = { ...form, [field]: value }
@@ -36,29 +53,52 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
     }
   }
 
-  const handleTestConnection = async () => {
-    setTesting(true)
-    setConnectionStatus('unknown')
-    try {
-      const result = await window.electronAPI.checkHealth()
-      setConnectionStatus(result ? 'ok' : 'fail')
-    } catch {
-      setConnectionStatus('fail')
-    } finally {
-      setTesting(false)
-    }
-  }
-
   const handleSave = () => {
     onSave(form)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
 
+  const handleRunDiagnostics = async () => {
+    setTesting(true)
+    try {
+      const diag = await window.electronAPI.runDiagnostics()
+      setConnectionStatus(diag.serverReachable ? (diag.modelFound ? 'ok' : 'fail') : 'fail')
+      setDiagResult(diag)
+    } catch {
+      setConnectionStatus('fail')
+      setDiagResult(null)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleCopyCheckpoint = async () => {
+    try {
+      const prompt = await window.electronAPI.generateCheckpoint()
+      await navigator.clipboard.writeText(prompt)
+      setCheckpointCopied(true)
+      setTimeout(() => setCheckpointCopied(false), 2000)
+    } catch (err) {
+      console.error('Failed to generate checkpoint:', err)
+    }
+  }
+
   return (
     <div className="settings-pane">
+      {/* Main settings card */}
       <div className="settings-card">
-        <h2>&#x2699; Settings</h2>
+        <div className="settings-card-header">
+          <h2>Settings</h2>
+          <div className="live-status" onClick={checkConnection} title="Click to refresh">
+            <span className={`status-dot ${connectionStatus}`} />
+            <span className="live-status-text">
+              {connectionStatus === 'ok' && 'Connected'}
+              {connectionStatus === 'fail' && 'Offline'}
+              {connectionStatus === 'unknown' && 'Checking...'}
+            </span>
+          </div>
+        </div>
 
         <div className="settings-field">
           <label htmlFor="ollama-endpoint">Ollama Endpoint</label>
@@ -87,7 +127,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             Context Window Size
             <span
               className="settings-help-icon"
-              title="How many tokens the model can process at once. Higher values use more GPU memory. If your requested size exceeds available memory, the app automatically falls back to a smaller size. You'll see a warning badge in the chat when this happens."
+              title="How many tokens the model can process at once. Higher values use more GPU memory. If your requested size exceeds available memory, the app automatically falls back to a smaller size and updates this value."
             >
               ?
             </span>
@@ -116,6 +156,7 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
                 title={THEMES[name].label}
                 style={{ background: THEMES[name].accent }}
               >
+                <span className="theme-swatch-emoji">{THEMES[name].emoji}</span>
                 <span className="theme-swatch-label">{THEMES[name].label}</span>
               </button>
             ))}
@@ -126,93 +167,68 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
           <button className="settings-btn primary" onClick={handleSave}>
             {saved ? 'Saved!' : 'Save'}
           </button>
-          <button
-            className="settings-btn secondary"
-            onClick={handleTestConnection}
-            disabled={testing}
-          >
-            {testing ? 'Testing...' : 'Test Connection'}
-          </button>
-
-          <div className="connection-status">
-            <span
-              className={`status-dot ${connectionStatus}`}
-            />
-            <span>
-              {connectionStatus === 'ok' && 'Connected'}
-              {connectionStatus === 'fail' && 'Unreachable'}
-              {connectionStatus === 'unknown' && 'Not tested'}
-            </span>
-          </div>
         </div>
       </div>
 
-      <div className="settings-card" style={{ marginTop: '24px' }}>
-        <h2>Cloud Checkpoint</h2>
-        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-          Generate a project snapshot prompt for Codex / Claude review. Saves cloud credits by providing structured context.
-        </p>
-        <button
-          className="settings-btn secondary"
-          onClick={async () => {
-            try {
-              const prompt = await window.electronAPI.generateCheckpoint()
-              await navigator.clipboard.writeText(prompt)
-              setSaved(true)
-              setTimeout(() => setSaved(false), 2000)
-            } catch (err) {
-              console.error('Failed to generate checkpoint:', err)
-            }
-          }}
-        >
-          {saved ? 'Copied to clipboard!' : 'Copy Checkpoint Prompt'}
-        </button>
-      </div>
-
-      <div className="settings-card" style={{ marginTop: '24px' }}>
-        <h2>Ollama Diagnostics</h2>
-        <div className="diagnostics-panel">
-          <button
-            className="settings-btn secondary"
-            onClick={async () => {
-              setTesting(true)
-              try {
-                const diag = await window.electronAPI.runDiagnostics()
-                setConnectionStatus(diag.serverReachable ? (diag.modelFound ? 'ok' : 'fail') : 'fail')
-                setDiagResult(diag)
-              } catch {
-                setConnectionStatus('fail')
-                setDiagResult(null)
-              } finally {
-                setTesting(false)
-              }
-            }}
-            disabled={testing}
-          >
-            {testing ? 'Running...' : 'Run Diagnostics'}
+      {/* Info cards: horizontal row */}
+      <div className="settings-info-row">
+        {/* Connection card */}
+        <div className="settings-info-card">
+          <div className="info-card-icon">
+            <span className={`status-dot-lg ${connectionStatus}`} />
+          </div>
+          <h3>Connection</h3>
+          <p>
+            {connectionStatus === 'ok' && 'Ollama is running and reachable'}
+            {connectionStatus === 'fail' && 'Cannot reach Ollama server'}
+            {connectionStatus === 'unknown' && 'Checking connection...'}
+          </p>
+          <button className="settings-btn secondary" onClick={checkConnection}>
+            Refresh
           </button>
+        </div>
 
-          {diagResult && (
-            <div className="diag-results">
+        {/* Checkpoint card */}
+        <div className="settings-info-card">
+          <div className="info-card-icon">{'\u{1F4CB}'}</div>
+          <h3>Checkpoint</h3>
+          <p>Copy a project snapshot prompt for cloud AI review</p>
+          <button className="settings-btn secondary" onClick={handleCopyCheckpoint}>
+            {checkpointCopied ? 'Copied!' : 'Copy Prompt'}
+          </button>
+        </div>
+
+        {/* Diagnostics card */}
+        <div className="settings-info-card">
+          <div className="info-card-icon">{'\u{1F50D}'}</div>
+          <h3>Diagnostics</h3>
+          {diagResult ? (
+            <div className="diag-results-mini">
               <div className="diag-row">
                 <span className={`status-dot ${diagResult.serverReachable ? 'ok' : 'fail'}`} />
-                <span>Server: {diagResult.serverReachable ? 'Connected' : 'Unreachable'}</span>
+                <span>Server: {diagResult.serverReachable ? 'OK' : 'Down'}</span>
               </div>
               <div className="diag-row">
                 <span className={`status-dot ${diagResult.modelFound ? 'ok' : 'fail'}`} />
-                <span>Model &ldquo;{form.modelName}&rdquo;: {diagResult.modelFound ? 'Available' : 'Not found'}</span>
+                <span>Model: {diagResult.modelFound ? 'Found' : 'Missing'}</span>
               </div>
               {diagResult.availableModels.length > 0 && (
-                <div className="diag-models">
-                  <span className="diag-label">Available models:</span>
-                  <span className="diag-model-list">{diagResult.availableModels.join(', ')}</span>
+                <div className="diag-models-mini">
+                  {diagResult.availableModels.slice(0, 3).join(', ')}
+                  {diagResult.availableModels.length > 3 && ` +${diagResult.availableModels.length - 3} more`}
                 </div>
               )}
-              {diagResult.error && (
-                <div className="diag-error">{diagResult.error}</div>
-              )}
             </div>
+          ) : (
+            <p>Run a full system check</p>
           )}
+          <button
+            className="settings-btn secondary"
+            onClick={handleRunDiagnostics}
+            disabled={testing}
+          >
+            {testing ? 'Running...' : 'Run Check'}
+          </button>
         </div>
       </div>
     </div>

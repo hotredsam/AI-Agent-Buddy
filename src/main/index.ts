@@ -14,8 +14,9 @@ function createWindow(): void {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#0c0c14',
     show: false, // Show after ready-to-show to avoid white flash
+    frame: false, // Custom titlebar — overrides system theme color (e.g., red)
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,

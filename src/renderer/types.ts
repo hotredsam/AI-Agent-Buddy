@@ -62,8 +62,13 @@ export interface ElectronAPI {
   }) => void) => () => void
   listFiles: () => Promise<UserFile[]>
   importFile: () => Promise<UserFile | null>
+  importFileByPath: (filePath: string) => Promise<UserFile | null>
   deleteFile: (fileName: string) => Promise<boolean>
   openFilesFolder: () => Promise<void>
+  windowMinimize: () => Promise<void>
+  windowMaximize: () => Promise<void>
+  windowClose: () => Promise<void>
+  windowIsMaximized: () => Promise<boolean>
   generateCheckpoint: () => Promise<string>
 }
 

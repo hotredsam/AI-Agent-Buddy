@@ -58,8 +58,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // --- User Files ---
   listFiles: () => ipcRenderer.invoke('files:list'),
   importFile: () => ipcRenderer.invoke('files:import'),
+  importFileByPath: (filePath: string) => ipcRenderer.invoke('files:importByPath', filePath),
   deleteFile: (fileName: string) => ipcRenderer.invoke('files:delete', fileName),
   openFilesFolder: () => ipcRenderer.invoke('files:openFolder'),
+
+  // --- Window Controls (frameless) ---
+  windowMinimize: () => ipcRenderer.invoke('window:minimize'),
+  windowMaximize: () => ipcRenderer.invoke('window:maximize'),
+  windowClose: () => ipcRenderer.invoke('window:close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
   // --- Cloud Checkpoint ---
   generateCheckpoint: () => ipcRenderer.invoke('checkpoint:generate'),

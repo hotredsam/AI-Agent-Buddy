@@ -11,6 +11,7 @@ interface ChatPaneProps {
     wasClamped: boolean
   } | null
   modelName?: string
+  agentEmoji?: string
 }
 
 /**
@@ -204,6 +205,7 @@ export default function ChatPane({
   isStreaming,
   contextInfo,
   modelName,
+  agentEmoji = '\u{1F916}',
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -272,39 +274,36 @@ export default function ChatPane({
       <div className="chat-messages" ref={scrollRef} onScroll={handleScroll}>
         {messages.map((msg) => (
           <div key={msg.id} className={`message-row ${msg.role}`}>
-            <div
-              className="message-avatar"
-              dangerouslySetInnerHTML={{
-                __html: msg.role === 'user' ? '&#x1F464;' : '&#x1F916;',
-              }}
-            />
-            <div className="message-bubble">
-              {renderMarkdown(msg.content)}
+            <div className="message-content">
+              <div className="message-bubble">
+                {renderMarkdown(msg.content)}
+              </div>
+              <div className="message-avatar">
+                {msg.role === 'user' ? '\u{1F464}' : agentEmoji}
+              </div>
             </div>
           </div>
         ))}
 
         {isStreaming && streamingText && (
           <div className="message-row assistant">
-            <div
-              className="message-avatar"
-              dangerouslySetInnerHTML={{ __html: '&#x1F916;' }}
-            />
-            <div className="message-bubble">
-              {renderMarkdown(streamingText)}
-              <span className="streaming-cursor" />
+            <div className="message-content">
+              <div className="message-bubble">
+                {renderMarkdown(streamingText)}
+                <span className="streaming-cursor" />
+              </div>
+              <div className="message-avatar">{agentEmoji}</div>
             </div>
           </div>
         )}
 
         {isStreaming && !streamingText && (
           <div className="message-row assistant">
-            <div
-              className="message-avatar"
-              dangerouslySetInnerHTML={{ __html: '&#x1F916;' }}
-            />
-            <div className="message-bubble">
-              <span className="streaming-cursor" />
+            <div className="message-content">
+              <div className="message-bubble">
+                <span className="streaming-cursor" />
+              </div>
+              <div className="message-avatar">{agentEmoji}</div>
             </div>
           </div>
         )}

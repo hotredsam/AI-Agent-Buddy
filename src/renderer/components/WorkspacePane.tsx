@@ -58,11 +58,28 @@ export default function WorkspacePane() {
     window.electronAPI.openFilesFolder()
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
-    // Note: drag-drop file import would require additional IPC for direct path import
-    // For now, use the Import button
+
+    const droppedFiles = e.dataTransfer.files
+    if (!droppedFiles || droppedFiles.length === 0) return
+
+    for (let i = 0; i < droppedFiles.length; i++) {
+      const file = droppedFiles[i]
+      // Electron exposes the real path on the File object
+      const filePath = (file as any).path
+      if (filePath) {
+        try {
+          const imported = await window.electronAPI.importFileByPath(filePath)
+          if (imported) {
+            setFiles(prev => [imported, ...prev.filter(f => f.name !== imported.name)])
+          }
+        } catch (err) {
+          console.error('Failed to import dropped file:', err)
+        }
+      }
+    }
   }
 
   return (

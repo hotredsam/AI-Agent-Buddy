@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import type { Conversation, Message, Settings } from './types'
+import type { Conversation, Message, Settings, ThemeName } from './types'
+import Titlebar from './components/Titlebar'
 import Sidebar from './components/Sidebar'
 import ChatPane from './components/ChatPane'
 import Composer from './components/Composer'
 import SettingsPane from './components/SettingsPane'
 import WorkspacePane from './components/WorkspacePane'
 import Toast, { type ToastMessage } from './components/Toast'
-import { applyTheme } from './themes'
+import { applyTheme, THEMES } from './themes'
 
 type View = 'chat' | 'settings' | 'workspace'
 
@@ -156,9 +157,15 @@ export default function App() {
         })
         if (data.wasClamped) {
           addToast(
-            `Context window clamped: ${data.requestedCtx.toLocaleString()} → ${data.effectiveCtx.toLocaleString()} tokens. Reduce in Settings to avoid this.`,
+            `Context window auto-reduced: ${data.requestedCtx.toLocaleString()} → ${data.effectiveCtx.toLocaleString()} tokens (saved to settings).`,
             'warning'
           )
+          // Auto-update settings so user doesn't keep hitting this
+          setSettings(prev => {
+            const updated = { ...prev, numCtx: data.effectiveCtx }
+            window.electronAPI.setSettings(updated).catch(() => {})
+            return updated
+          })
         }
       }
     })
@@ -291,9 +298,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [handleNewChat])
 
+  // ---- Derived: theme-specific agent emoji ----
+  const currentTheme = THEMES[settings.theme as ThemeName] || THEMES.glass
+  const agentEmoji = currentTheme.agentEmoji || '\u{1F916}'
+
   // ---- Render ----
   return (
-    <div className="app-layout">
+    <div className="app-root">
+      <Titlebar />
+      <div className="app-layout">
       <Sidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
@@ -314,6 +327,7 @@ export default function App() {
               isStreaming={isStreaming}
               contextInfo={contextInfo}
               modelName={settings.modelName}
+              agentEmoji={agentEmoji}
             />
             <Composer
               onSend={handleSendMessage}
@@ -332,6 +346,7 @@ export default function App() {
       </div>
 
       <Toast toasts={toasts} onDismiss={dismissToast} />
+      </div>
     </div>
   )
 }

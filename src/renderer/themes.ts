@@ -2,6 +2,8 @@ import type { ThemeName } from './types'
 
 interface ThemeTokens {
   label: string
+  emoji: string       // Theme icon for picker
+  agentEmoji: string  // Bot avatar in chat (changes per theme)
   glassBg: string
   glassBgStrong: string
   glassSidebar: string
@@ -31,6 +33,8 @@ interface ThemeTokens {
 export const THEMES: Record<ThemeName, ThemeTokens> = {
   glass: {
     label: 'Glass',
+    emoji: '\u{1F52E}',
+    agentEmoji: '\u{1F916}',
     glassBg: 'rgba(28,28,35,0.72)',
     glassBgStrong: 'rgba(32,32,42,0.85)',
     glassSidebar: 'rgba(22,22,30,0.78)',
@@ -58,6 +62,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   forest: {
     label: 'Forest',
+    emoji: '\u{1F332}',
+    agentEmoji: '\u{1F43B}',
     glassBg: 'rgba(20,30,22,0.75)',
     glassBgStrong: 'rgba(24,36,26,0.85)',
     glassSidebar: 'rgba(16,26,18,0.8)',
@@ -85,6 +91,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   ocean: {
     label: 'Ocean',
+    emoji: '\u{1F30A}',
+    agentEmoji: '\u{1F42C}',
     glassBg: 'rgba(18,28,40,0.75)',
     glassBgStrong: 'rgba(22,34,48,0.85)',
     glassSidebar: 'rgba(14,22,34,0.8)',
@@ -112,6 +120,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   ember: {
     label: 'Ember',
+    emoji: '\u{1F525}',
+    agentEmoji: '\u{1F985}',
     glassBg: 'rgba(35,22,18,0.75)',
     glassBgStrong: 'rgba(42,28,22,0.85)',
     glassSidebar: 'rgba(28,18,14,0.8)',
@@ -139,6 +149,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   midnight: {
     label: 'Midnight',
+    emoji: '\u{1F319}',
+    agentEmoji: '\u{1F987}',
     glassBg: 'rgba(16,16,28,0.78)',
     glassBgStrong: 'rgba(20,20,36,0.88)',
     glassSidebar: 'rgba(12,12,22,0.82)',
@@ -166,6 +178,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   slate: {
     label: 'Slate',
+    emoji: '\u{1FAA8}',
+    agentEmoji: '\u{1F9BE}',
     glassBg: 'rgba(30,32,36,0.75)',
     glassBgStrong: 'rgba(36,38,44,0.85)',
     glassSidebar: 'rgba(24,26,30,0.8)',
@@ -193,6 +207,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   sand: {
     label: 'Sand',
+    emoji: '\u{1F3DC}',
+    agentEmoji: '\u{1F42A}',
     glassBg: 'rgba(36,32,26,0.75)',
     glassBgStrong: 'rgba(44,40,32,0.85)',
     glassSidebar: 'rgba(30,26,20,0.8)',
@@ -220,6 +236,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   rose: {
     label: 'Rose',
+    emoji: '\u{1F339}',
+    agentEmoji: '\u{1F98B}',
     glassBg: 'rgba(35,22,28,0.75)',
     glassBgStrong: 'rgba(42,28,34,0.85)',
     glassSidebar: 'rgba(28,18,22,0.8)',
@@ -247,6 +265,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   cyber: {
     label: 'Cyber',
+    emoji: '\u{1F4BB}',
+    agentEmoji: '\u{1F47E}',
     glassBg: 'rgba(16,24,20,0.78)',
     glassBgStrong: 'rgba(20,30,24,0.88)',
     glassSidebar: 'rgba(12,20,16,0.82)',
@@ -274,6 +294,8 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
   },
   classic: {
     label: 'Classic',
+    emoji: '\u{2764}',
+    agentEmoji: '\u{1F916}',
     glassBg: 'rgba(26,26,36,0.75)',
     glassBgStrong: 'rgba(32,32,44,0.85)',
     glassSidebar: 'rgba(20,20,30,0.8)',
