@@ -26,6 +26,12 @@ export interface Settings {
   numCtx: number
   theme: string
   apiKeys?: Record<string, string>
+  permissions?: {
+    allowTerminal: boolean
+    allowFileWrite: boolean
+    allowAICodeExec: boolean
+  }
+  activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
 }
 
 // --- Default Settings ---

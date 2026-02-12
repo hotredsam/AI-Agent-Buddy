@@ -1,4 +1,7 @@
 import { ipcMain, IpcMainInvokeEvent, dialog, shell, BrowserWindow } from 'electron'
+import { spawn } from 'child_process'
+import * as os from 'os'
+import * as fs from 'fs'
 import * as store from './store'
 import { sendMessageStream, checkHealth, listModels, runDiagnostics, OllamaChatMessage, StreamMeta } from './ollama'
 
@@ -293,4 +296,107 @@ export function registerIpcHandlers(): void {
 
     return prompt
   })
+
+  // --- Terminal Handlers ---
+
+  ipcMain.handle(
+    'terminal:execute',
+    async (
+      _event: IpcMainInvokeEvent,
+      command: string,
+      cwd: string
+    ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+      return new Promise((resolve) => {
+        const stdout: string[] = []
+        const stderr: string[] = []
+        let killed = false
+
+        const child = spawn(command, [], {
+          cwd,
+          shell: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+
+        const timeout = setTimeout(() => {
+          killed = true
+          child.kill('SIGTERM')
+          // Force kill if SIGTERM doesn't work after 2 seconds
+          setTimeout(() => {
+            try {
+              child.kill('SIGKILL')
+            } catch {
+              // Process already exited
+            }
+          }, 2000)
+        }, 30_000)
+
+        child.stdout?.on('data', (data: Buffer) => {
+          stdout.push(data.toString())
+        })
+
+        child.stderr?.on('data', (data: Buffer) => {
+          stderr.push(data.toString())
+        })
+
+        child.on('close', (code: number | null) => {
+          clearTimeout(timeout)
+          resolve({
+            stdout: stdout.join(''),
+            stderr: killed
+              ? stderr.join('') + '\n[Process killed: 30s timeout exceeded]'
+              : stderr.join(''),
+            exitCode: code ?? (killed ? 137 : 1),
+          })
+        })
+
+        child.on('error', (err: Error) => {
+          clearTimeout(timeout)
+          resolve({
+            stdout: '',
+            stderr: err.message,
+            exitCode: 1,
+          })
+        })
+      })
+    }
+  )
+
+  ipcMain.handle(
+    'terminal:getCwd',
+    async (): Promise<string> => {
+      return os.homedir()
+    }
+  )
+
+  // --- File Read/Write Handlers ---
+
+  ipcMain.handle(
+    'files:readFile',
+    async (
+      _event: IpcMainInvokeEvent,
+      filePath: string
+    ): Promise<string | null> => {
+      try {
+        return fs.readFileSync(filePath, 'utf-8')
+      } catch {
+        return null
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'files:writeFile',
+    async (
+      _event: IpcMainInvokeEvent,
+      filePath: string,
+      content: string
+    ): Promise<boolean> => {
+      try {
+        fs.writeFileSync(filePath, content, 'utf-8')
+        return true
+      } catch {
+        return false
+      }
+    }
+  )
 }

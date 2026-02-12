@@ -6,21 +6,45 @@ import ChatPane from './components/ChatPane'
 import Composer from './components/Composer'
 import SettingsPane from './components/SettingsPane'
 import WorkspacePane from './components/WorkspacePane'
+import EditorPane from './components/EditorPane'
+import TerminalPane from './components/TerminalPane'
 import Toast, { type ToastMessage } from './components/Toast'
 import { applyTheme, THEMES } from './themes'
 
-type View = 'chat' | 'settings' | 'workspace'
+type View = 'chat' | 'settings' | 'workspace' | 'code'
 
 const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
   modelName: 'glm-4.7-flash',
   numCtx: 8192,
   theme: 'glass',
+  permissions: {
+    allowTerminal: true,
+    allowFileWrite: true,
+    allowAICodeExec: false,
+  },
+  activeProvider: 'ollama',
 }
 
 let toastIdCounter = 0
 function nextToastId(): string {
   return `toast-${++toastIdCounter}`
+}
+
+/** Detect language from file extension */
+function detectLanguage(filePath: string | null): string {
+  if (!filePath) return ''
+  const ext = filePath.split('.').pop()?.toLowerCase() || ''
+  const map: Record<string, string> = {
+    ts: 'TypeScript', tsx: 'TypeScript', js: 'JavaScript', jsx: 'JavaScript',
+    py: 'Python', rs: 'Rust', go: 'Go', java: 'Java', c: 'C', cpp: 'C++',
+    h: 'C', hpp: 'C++', cs: 'C#', rb: 'Ruby', php: 'PHP', swift: 'Swift',
+    kt: 'Kotlin', dart: 'Dart', html: 'HTML', css: 'CSS', scss: 'SCSS',
+    json: 'JSON', yaml: 'YAML', yml: 'YAML', xml: 'XML', md: 'Markdown',
+    sql: 'SQL', sh: 'Shell', bash: 'Bash', ps1: 'PowerShell', bat: 'Batch',
+    toml: 'TOML', ini: 'INI', cfg: 'Config', txt: 'Text',
+  }
+  return map[ext] || ext.toUpperCase()
 }
 
 export default function App() {
@@ -31,6 +55,11 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [view, setView] = useState<View>('chat')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  // ---- Editor state ----
+  const [editorFilePath, setEditorFilePath] = useState<string | null>(null)
+  const [editorContent, setEditorContent] = useState('')
+  const [editorLanguage, setEditorLanguage] = useState('')
 
   // ---- Streaming state ----
   const [isStreaming, setIsStreaming] = useState(false)
@@ -71,7 +100,6 @@ export default function App() {
         if (convos.length > 0) {
           setActiveConversationId(convos[0].id)
         } else {
-          // Bootstrap: create initial conversation so user can type immediately
           try {
             const newConv = await window.electronAPI.createConversation()
             setConversations([newConv])
@@ -121,7 +149,6 @@ export default function App() {
 
     const unsubDone = window.electronAPI.onDone((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
-        // Reload messages to get the finalized assistant message from store
         window.electronAPI
           .listMessages(data.conversationId)
           .then(setMessages)
@@ -130,7 +157,6 @@ export default function App() {
         setStreamingText('')
         streamingConvIdRef.current = null
 
-        // Refresh conversation list to update timestamps
         window.electronAPI.listConversations().then(setConversations).catch(() => {})
       }
     })
@@ -138,7 +164,6 @@ export default function App() {
     const unsubError = window.electronAPI.onError((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
         addToast('Streaming error: ' + data.error)
-        // Still try to reload messages in case a partial response was saved
         window.electronAPI
           .listMessages(data.conversationId)
           .then(setMessages)
@@ -158,10 +183,9 @@ export default function App() {
         })
         if (data.wasClamped) {
           addToast(
-            `Context window auto-reduced: ${data.requestedCtx.toLocaleString()} → ${data.effectiveCtx.toLocaleString()} tokens (saved to settings).`,
+            `Context window auto-reduced: ${data.requestedCtx.toLocaleString()} \u2192 ${data.effectiveCtx.toLocaleString()} tokens (saved to settings).`,
             'warning'
           )
-          // Auto-update settings so user doesn't keep hitting this
           setSettings(prev => {
             const updated = { ...prev, numCtx: data.effectiveCtx }
             window.electronAPI.setSettings(updated).catch(() => {})
@@ -221,10 +245,46 @@ export default function App() {
     }
   }, [addToast])
 
+  // ---- Editor handlers ----
+  const handleOpenFile = useCallback(async () => {
+    // Use Electron dialog to pick a file, then read it
+    try {
+      const file = await window.electronAPI.importFile()
+      if (file) {
+        const content = await window.electronAPI.readFile(file.path)
+        if (content !== null) {
+          setEditorFilePath(file.path)
+          setEditorContent(content)
+          setEditorLanguage(detectLanguage(file.path))
+          setView('code')
+        }
+      }
+    } catch (err: any) {
+      addToast('Failed to open file: ' + err.message)
+    }
+  }, [addToast])
+
+  const handleEditorSave = useCallback(async () => {
+    if (!editorFilePath) return
+    const perms = settings.permissions || { allowFileWrite: true, allowTerminal: true, allowAICodeExec: false }
+    if (!perms.allowFileWrite) {
+      addToast('File write is disabled in permissions. Enable it in Settings.', 'warning')
+      return
+    }
+    try {
+      const ok = await window.electronAPI.writeFile(editorFilePath, editorContent)
+      if (!ok) {
+        addToast('Failed to save file.')
+      }
+    } catch (err: any) {
+      addToast('Save error: ' + err.message)
+    }
+  }, [editorFilePath, editorContent, settings.permissions, addToast])
+
+  // ---- AI-powered code actions (extract code blocks, run commands) ----
   const handleSendMessage = useCallback(async (text: string) => {
     if (!activeConversationId || isStreaming) return
 
-    // Optimistic UI: add user message immediately
     const tempUserMsg: Message = {
       id: `temp-${Date.now()}`,
       conversationId: activeConversationId,
@@ -240,7 +300,6 @@ export default function App() {
     try {
       await window.electronAPI.sendMessage(activeConversationId, text)
 
-      // Auto-title if still "New Conversation"
       const conv = conversations.find(c => c.id === activeConversationId)
       if (conv && conv.title === 'New Conversation') {
         const autoTitle = text.length > 40 ? text.slice(0, 40) + '...' : text
@@ -278,35 +337,38 @@ export default function App() {
   // ---- Keyboard shortcuts ----
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+N / Cmd+N: New chat
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
         e.preventDefault()
         handleNewChat()
       }
-      // Ctrl+, / Cmd+,: Settings
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault()
         setView('settings')
       }
-      // Ctrl+1 / Cmd+1: Chat view
       if ((e.ctrlKey || e.metaKey) && e.key === '1') {
         e.preventDefault()
         setView('chat')
       }
-      // Ctrl+2 / Cmd+2: Files view
       if ((e.ctrlKey || e.metaKey) && e.key === '2') {
+        e.preventDefault()
+        setView('code')
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '3') {
         e.preventDefault()
         setView('workspace')
       }
-      // Ctrl+B / Cmd+B: Toggle sidebar
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault()
         setSidebarCollapsed(prev => !prev)
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        e.preventDefault()
+        handleOpenFile()
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleNewChat])
+  }, [handleNewChat, handleOpenFile])
 
   // ---- Derived: theme-specific agent emoji ----
   const currentTheme = THEMES[settings.theme as ThemeName] || THEMES.glass
@@ -340,6 +402,14 @@ export default function App() {
               contextInfo={contextInfo}
               modelName={settings.modelName}
               agentEmoji={agentEmoji}
+              onSendToEditor={(code) => {
+                setEditorContent(code)
+                setView('code')
+              }}
+              onRunInTerminal={(command) => {
+                // Switch to code view so user sees terminal
+                setView('code')
+              }}
             />
             <Composer
               onSend={handleSendMessage}
@@ -354,6 +424,24 @@ export default function App() {
 
         {view === 'workspace' && (
           <WorkspacePane />
+        )}
+
+        {view === 'code' && (
+          <div className="workspace-split">
+            <div className="workspace-split-top">
+              <EditorPane
+                filePath={editorFilePath}
+                content={editorContent}
+                onContentChange={setEditorContent}
+                onSave={handleEditorSave}
+                language={editorLanguage}
+                onOpenFile={handleOpenFile}
+              />
+            </div>
+            <div className="workspace-split-bottom">
+              <TerminalPane />
+            </div>
+          </div>
         )}
       </div>
 

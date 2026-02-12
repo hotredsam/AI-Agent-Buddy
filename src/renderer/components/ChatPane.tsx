@@ -12,6 +12,8 @@ interface ChatPaneProps {
   } | null
   modelName?: string
   agentEmoji?: string
+  onSendToEditor?: (code: string) => void
+  onRunInTerminal?: (command: string) => void
 }
 
 /**
@@ -20,7 +22,11 @@ interface ChatPaneProps {
  * blockquotes (>), unordered lists (- or *), ordered lists (1.).
  * Returns an array of React nodes.
  */
-function renderMarkdown(text: string): React.ReactNode[] {
+function renderMarkdown(
+  text: string,
+  onSendToEditor?: (code: string) => void,
+  onRunInTerminal?: (command: string) => void,
+): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
 
   // Split by fenced code blocks first
@@ -33,11 +39,17 @@ function renderMarkdown(text: string): React.ReactNode[] {
     if (match.index > lastIndex) {
       nodes.push(...renderBlocks(text.slice(lastIndex, match.index), nodes.length))
     }
-    // Render code block with copy button
+    // Render code block with copy button + editor/terminal actions
     const lang = match[1] || ''
     const code = match[2]
     nodes.push(
-      <CodeBlock key={`cb-${nodes.length}`} language={lang} code={code} />
+      <CodeBlock
+        key={`cb-${nodes.length}`}
+        language={lang}
+        code={code}
+        onSendToEditor={onSendToEditor}
+        onRunInTerminal={onRunInTerminal}
+      />
     )
     lastIndex = match.index + match[0].length
   }
@@ -161,9 +173,14 @@ function renderInline(text: string, keyOffset: number): React.ReactNode[] {
 }
 
 /**
- * Code block component with copy-to-clipboard button and language tag
+ * Code block component with copy-to-clipboard, send-to-editor, and run buttons
  */
-function CodeBlock({ language, code }: { language: string; code: string }) {
+function CodeBlock({ language, code, onSendToEditor, onRunInTerminal }: {
+  language: string
+  code: string
+  onSendToEditor?: (code: string) => void
+  onRunInTerminal?: (command: string) => void
+}) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
@@ -176,13 +193,29 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
     }
   }
 
+  // Detect if this looks like a terminal command (shell, bash, no lang, or single-line)
+  const isCommand = ['sh', 'bash', 'shell', 'cmd', 'powershell', 'ps1', 'bat', 'terminal'].includes(language.toLowerCase())
+    || (!language && code.split('\n').filter(l => l.trim()).length <= 3)
+
   return (
     <div className="code-block-wrapper">
       <div className="code-block-header">
         {language && <span className="code-block-lang">{language}</span>}
-        <button className="code-block-copy" onClick={handleCopy}>
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
+        <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+          {onSendToEditor && !isCommand && (
+            <button className="code-block-copy" onClick={() => onSendToEditor(code)} title="Send to Editor">
+              {'\u{1F4DD}'} Editor
+            </button>
+          )}
+          {onRunInTerminal && isCommand && (
+            <button className="code-block-copy" onClick={() => onRunInTerminal(code.trim())} title="Run in Terminal">
+              {'\u{25B6}'} Run
+            </button>
+          )}
+          <button className="code-block-copy" onClick={handleCopy}>
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
       </div>
       <pre>
         <code>{code}</code>
@@ -206,6 +239,8 @@ export default function ChatPane({
   contextInfo,
   modelName,
   agentEmoji = '\u{1F916}',
+  onSendToEditor,
+  onRunInTerminal,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -276,7 +311,7 @@ export default function ChatPane({
           <div key={msg.id} className={`message-row ${msg.role}`}>
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(msg.content)}
+                {renderMarkdown(msg.content, onSendToEditor, onRunInTerminal)}
               </div>
               <div className="message-avatar">
                 {msg.role === 'user' ? '\u{1F464}' : agentEmoji}
@@ -289,7 +324,7 @@ export default function ChatPane({
           <div className="message-row assistant">
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(streamingText)}
+                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal)}
                 <span className="streaming-cursor" />
               </div>
               <div className="message-avatar">{agentEmoji}</div>

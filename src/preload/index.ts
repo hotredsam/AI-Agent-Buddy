@@ -70,6 +70,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
+  // --- Terminal ---
+  terminalExecute: (command: string, cwd: string) =>
+    ipcRenderer.invoke('terminal:execute', command, cwd),
+  terminalGetCwd: () => ipcRenderer.invoke('terminal:getCwd'),
+
+  // --- File Read/Write ---
+  readFile: (filePath: string) => ipcRenderer.invoke('files:readFile', filePath),
+  writeFile: (filePath: string, content: string) =>
+    ipcRenderer.invoke('files:writeFile', filePath, content),
+
   // --- Cloud Checkpoint ---
   generateCheckpoint: () => ipcRenderer.invoke('checkpoint:generate'),
 })

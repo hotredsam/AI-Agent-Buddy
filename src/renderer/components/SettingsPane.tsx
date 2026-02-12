@@ -226,6 +226,131 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
         ))}
       </div>
 
+      {/* Model Provider card */}
+      <div className="settings-card provider-card">
+        <h2>Model Provider</h2>
+        <span className="settings-field-hint" style={{ marginBottom: 16, display: 'block' }}>
+          Choose which AI provider to use. Cloud providers require an API key above.
+        </span>
+        <div className="provider-grid">
+          <div
+            className={`provider-option ${(form.activeProvider || 'ollama') === 'ollama' ? 'active' : ''}`}
+            onClick={() => {
+              const updated = { ...form, activeProvider: 'ollama' as const }
+              setForm(updated)
+              onSave(updated)
+            }}
+          >
+            <div className="provider-icon">{'\u{1F999}'}</div>
+            <span className="provider-name">Ollama</span>
+            <span className={`provider-status ${connectionStatus === 'ok' ? 'connected' : ''}`}>
+              {connectionStatus === 'ok' ? 'Connected' : 'Local'}
+            </span>
+          </div>
+          {API_PROVIDERS.map(({ key, label }) => {
+            const hasKey = !!(form.apiKeys?.[key])
+            return (
+              <div
+                key={key}
+                className={`provider-option ${(form.activeProvider) === key ? 'active' : ''} ${!hasKey ? 'disabled' : ''}`}
+                onClick={() => {
+                  if (!hasKey) return
+                  const updated = { ...form, activeProvider: key as any }
+                  setForm(updated)
+                  onSave(updated)
+                }}
+                title={hasKey ? `Switch to ${label}` : `Add ${label} API key first`}
+              >
+                <div className="provider-icon">
+                  {key === 'openai' && '\u{1F7E2}'}
+                  {key === 'anthropic' && '\u{1F7E0}'}
+                  {key === 'google' && '\u{1F535}'}
+                  {key === 'groq' && '\u{26A1}'}
+                </div>
+                <span className="provider-name">{label}</span>
+                <span className={`provider-status ${hasKey ? 'connected' : ''}`}>
+                  {hasKey ? 'Key set' : 'No key'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Permissions card */}
+      <div className="settings-card permissions-card">
+        <h2>Permissions</h2>
+        <span className="settings-field-hint" style={{ marginBottom: 16, display: 'block' }}>
+          Control what the AI agent is allowed to do on your system.
+        </span>
+
+        <div className="permission-toggle-row">
+          <div className="permission-label">
+            <span className="permission-label-title">Terminal Access</span>
+            <span className="permission-label-desc">Allow running commands in the built-in terminal</span>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={form.permissions?.allowTerminal ?? true}
+              onChange={(e) => {
+                const perms = { ...(form.permissions || { allowTerminal: true, allowFileWrite: true, allowAICodeExec: false }), allowTerminal: e.target.checked }
+                const updated = { ...form, permissions: perms }
+                setForm(updated)
+                setSaved(false)
+              }}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        <div className="permission-toggle-row">
+          <div className="permission-label">
+            <span className="permission-label-title">File Write</span>
+            <span className="permission-label-desc">Allow saving and modifying files on disk</span>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={form.permissions?.allowFileWrite ?? true}
+              onChange={(e) => {
+                const perms = { ...(form.permissions || { allowTerminal: true, allowFileWrite: true, allowAICodeExec: false }), allowFileWrite: e.target.checked }
+                const updated = { ...form, permissions: perms }
+                setForm(updated)
+                setSaved(false)
+              }}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        <div className="permission-toggle-row">
+          <div className="permission-label">
+            <span className="permission-label-title">AI Code Execution</span>
+            <span className="permission-label-desc">Allow AI to automatically run generated code (dangerous)</span>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={form.permissions?.allowAICodeExec ?? false}
+              onChange={(e) => {
+                const perms = { ...(form.permissions || { allowTerminal: true, allowFileWrite: true, allowAICodeExec: false }), allowAICodeExec: e.target.checked }
+                const updated = { ...form, permissions: perms }
+                setForm(updated)
+                setSaved(false)
+              }}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        <div className="settings-actions">
+          <button className="settings-btn primary" onClick={handleSave}>
+            {saved ? 'Saved!' : 'Save Permissions'}
+          </button>
+        </div>
+      </div>
+
       {/* Info cards: horizontal row */}
       <div className="settings-info-row">
         {/* Connection card */}

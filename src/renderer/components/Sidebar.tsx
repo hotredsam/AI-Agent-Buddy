@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import type { Conversation } from '../types'
 
-type View = 'chat' | 'settings' | 'workspace'
+type View = 'chat' | 'settings' | 'workspace' | 'code'
 
 interface SidebarProps {
   conversations: Conversation[]
@@ -116,6 +116,13 @@ export default function Sidebar({
             &#x2699;
           </button>
           <button
+            className={`sidebar-nav-btn ${view === 'code' ? 'active' : ''}`}
+            onClick={() => onChangeView('code')}
+            title="Code"
+          >
+            {'\u{1F4BB}'}
+          </button>
+          <button
             className={`sidebar-nav-btn ${view === 'workspace' ? 'active' : ''}`}
             onClick={() => onChangeView('workspace')}
             title="Files"
@@ -174,6 +181,13 @@ export default function Sidebar({
           title="Settings"
         >
           &#x2699; Settings
+        </button>
+        <button
+          className={`sidebar-nav-btn ${view === 'code' ? 'active' : ''}`}
+          onClick={() => onChangeView('code')}
+          title="Code Editor"
+        >
+          {'\u{1F4BB}'} Code
         </button>
         <button
           className={`sidebar-nav-btn ${view === 'workspace' ? 'active' : ''}`}

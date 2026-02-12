@@ -23,6 +23,12 @@ export interface Settings {
   numCtx: number
   theme: ThemeName
   apiKeys?: Record<string, string>
+  permissions?: {
+    allowTerminal: boolean
+    allowFileWrite: boolean
+    allowAICodeExec: boolean
+  }
+  activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
 }
 
 export interface UserFile {
@@ -71,6 +77,10 @@ export interface ElectronAPI {
   windowMaximize: () => Promise<void>
   windowClose: () => Promise<void>
   windowIsMaximized: () => Promise<boolean>
+  terminalExecute: (command: string, cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>
+  terminalGetCwd: () => Promise<string>
+  readFile: (filePath: string) => Promise<string | null>
+  writeFile: (filePath: string, content: string) => Promise<boolean>
   generateCheckpoint: () => Promise<string>
 }
 
