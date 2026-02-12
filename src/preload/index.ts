@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkHealth: () => ipcRenderer.invoke('ollama:health'),
   listModels: () => ipcRenderer.invoke('ollama:listModels'),
   runDiagnostics: () => ipcRenderer.invoke('ollama:diagnostics'),
+  pullModel: (modelName: string) => ipcRenderer.invoke('ollama:pullModel', modelName),
 
   // --- Streaming Event Listeners ---
   onToken: (callback: (data: any) => void) => {
@@ -63,6 +64,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('files:importByBuffer', fileName, buffer),
   deleteFile: (fileName: string) => ipcRenderer.invoke('files:delete', fileName),
   openFilesFolder: () => ipcRenderer.invoke('files:openFolder'),
+  createFile: (fileName: string, content: string, directory?: string) =>
+    ipcRenderer.invoke('files:createFile', fileName, content, directory),
+  saveFileAs: (sourcePath: string) => ipcRenderer.invoke('files:saveAs', sourcePath),
+  renameFile: (oldName: string, newName: string) =>
+    ipcRenderer.invoke('files:renameFile', oldName, newName),
+  moveFile: (fileName: string, destinationDir?: string) =>
+    ipcRenderer.invoke('files:moveFile', fileName, destinationDir),
+  duplicateFile: (sourceName: string, newName?: string) =>
+    ipcRenderer.invoke('files:duplicateFile', sourceName, newName),
+  getFileInfo: (fileName: string) => ipcRenderer.invoke('files:getFileInfo', fileName),
+  showInExplorer: (filePath: string) => ipcRenderer.invoke('files:showInExplorer', filePath),
+  openExternal: (filePath: string) => ipcRenderer.invoke('files:openExternal', filePath),
+  pickWorkspaceFolder: () => ipcRenderer.invoke('workspace:pickFolder'),
+  pickWorkspaceFile: () => ipcRenderer.invoke('workspace:pickFile'),
+  listWorkspaceFolder: (folderPath: string) => ipcRenderer.invoke('workspace:listFolder', folderPath),
+  createWorkspaceFile: (parentPath: string, fileName: string, content?: string) =>
+    ipcRenderer.invoke('workspace:createFile', parentPath, fileName, content),
+  createWorkspaceFolder: (parentPath: string, folderName: string) =>
+    ipcRenderer.invoke('workspace:createFolder', parentPath, folderName),
+  renameWorkspacePath: (targetPath: string, nextName: string) =>
+    ipcRenderer.invoke('workspace:renamePath', targetPath, nextName),
+  deleteWorkspacePath: (targetPath: string) => ipcRenderer.invoke('workspace:deletePath', targetPath),
 
   // --- Window Controls (frameless) ---
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
@@ -79,6 +102,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readFile: (filePath: string) => ipcRenderer.invoke('files:readFile', filePath),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('files:writeFile', filePath, content),
+  generateCode: (payload: { prompt: string; context?: string; provider?: string; model?: string }) =>
+    ipcRenderer.invoke('ai:generateCode', payload),
+  generateImage: (payload: { prompt: string; provider?: string; model?: string }) =>
+    ipcRenderer.invoke('ai:generateImage', payload),
 
   // --- Cloud Checkpoint ---
   generateCheckpoint: () => ipcRenderer.invoke('checkpoint:generate'),

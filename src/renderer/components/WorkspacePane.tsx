@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import type { UserFile } from '../types'
+import type { UserFile, UserFileInfo } from '../types'
+
+interface WorkspacePaneProps {
+  onOpenInEditor?: (file: UserFile) => void | Promise<void>
+  onNotify?: (text: string, type?: 'error' | 'warning' | 'success') => void
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -22,10 +27,17 @@ function fileIcon(type: string): string {
   return icons[type] || '\u{1F4CE}'
 }
 
-export default function WorkspacePane() {
+function formatDate(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString()
+}
+
+export default function WorkspacePane({ onOpenInEditor, onNotify }: WorkspacePaneProps) {
   const [files, setFiles] = useState<UserFile[]>([])
   const [loading, setLoading] = useState(true)
   const [dragOver, setDragOver] = useState(false)
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const [detailsFile, setDetailsFile] = useState<UserFileInfo | null>(null)
 
   const loadFiles = useCallback(async () => {
     try {
@@ -33,24 +45,42 @@ export default function WorkspacePane() {
       setFiles(list)
     } catch (err) {
       console.error('Failed to list files:', err)
+      onNotify?.('Failed to load library files.')
     } finally {
       setLoading(false)
     }
+  }, [onNotify])
+
+  useEffect(() => {
+    loadFiles()
+  }, [loadFiles])
+
+  useEffect(() => {
+    const closeMenu = () => setOpenMenu(null)
+    window.addEventListener('click', closeMenu)
+    return () => window.removeEventListener('click', closeMenu)
   }, [])
 
-  useEffect(() => { loadFiles() }, [loadFiles])
+  const upsertFile = useCallback((file: UserFile | null) => {
+    if (!file) return
+    setFiles((prev) => [file, ...prev.filter((f) => f.name !== file.name)])
+  }, [])
 
   const handleImport = async () => {
     const file = await window.electronAPI.importFile()
     if (file) {
-      setFiles(prev => [file, ...prev])
+      upsertFile(file)
     }
   }
 
   const handleDelete = async (fileName: string) => {
+    if (!confirm(`Delete "${fileName}"? This cannot be undone.`)) return
     const ok = await window.electronAPI.deleteFile(fileName)
     if (ok) {
-      setFiles(prev => prev.filter(f => f.name !== fileName))
+      setFiles((prev) => prev.filter((f) => f.name !== fileName))
+      onNotify?.(`Deleted "${fileName}".`, 'success')
+    } else {
+      onNotify?.(`Failed to delete "${fileName}".`)
     }
   }
 
@@ -68,25 +98,96 @@ export default function WorkspacePane() {
     for (let i = 0; i < droppedFiles.length; i++) {
       const file = droppedFiles[i]
       try {
-        // Try Electron's File.path first (works when sandbox: false + no contextIsolation quirks)
         const filePath = (file as any).path
         if (filePath) {
           const imported = await window.electronAPI.importFileByPath(filePath)
           if (imported) {
-            setFiles(prev => [imported, ...prev.filter(f => f.name !== imported.name)])
+            upsertFile(imported)
             continue
           }
         }
-        // Fallback: read file contents via FileReader API and send buffer over IPC
+
         const buffer = await file.arrayBuffer()
         const imported = await window.electronAPI.importFileByBuffer(file.name, buffer)
         if (imported) {
-          setFiles(prev => [imported, ...prev.filter(f => f.name !== imported.name)])
+          upsertFile(imported)
         }
       } catch (err) {
         console.error('Failed to import dropped file:', err)
       }
     }
+  }
+
+  const handleSaveAs = async (file: UserFile) => {
+    const ok = await window.electronAPI.saveFileAs(file.path)
+    if (!ok) onNotify?.(`Save As cancelled or failed for "${file.name}".`, 'warning')
+  }
+
+  const handleRename = async (file: UserFile) => {
+    const nextName = prompt('Rename file to:', file.name)?.trim()
+    if (!nextName || nextName === file.name) return
+    const renamed = await window.electronAPI.renameFile(file.name, nextName)
+    if (renamed) {
+      setFiles((prev) => prev.map((f) => (f.name === file.name ? renamed : f)))
+      onNotify?.(`Renamed to "${nextName}".`, 'success')
+    } else {
+      onNotify?.('Rename failed.')
+    }
+  }
+
+  const handleMove = async (file: UserFile) => {
+    const moved = await window.electronAPI.moveFile(file.name)
+    if (moved) {
+      setFiles((prev) => prev.filter((f) => f.name !== file.name))
+      onNotify?.(`Moved "${file.name}" to ${moved.path}.`, 'success')
+    } else {
+      onNotify?.('Move cancelled or failed.', 'warning')
+    }
+  }
+
+  const handleDuplicate = async (file: UserFile) => {
+    const parsed = file.name.lastIndexOf('.')
+    const defaultName = parsed > 0
+      ? `${file.name.slice(0, parsed)}_copy${file.name.slice(parsed)}`
+      : `${file.name}_copy`
+    const nextName = prompt('Duplicate as:', defaultName)?.trim()
+    if (!nextName) return
+
+    const duplicated = await window.electronAPI.duplicateFile(file.name, nextName)
+    if (duplicated) {
+      upsertFile(duplicated)
+      onNotify?.(`Duplicated as "${nextName}".`, 'success')
+    } else {
+      onNotify?.('Duplicate failed.')
+    }
+  }
+
+  const handleCopyPath = async (file: UserFile) => {
+    try {
+      await navigator.clipboard.writeText(file.path)
+      onNotify?.('File path copied.', 'success')
+    } catch {
+      onNotify?.('Failed to copy path.')
+    }
+  }
+
+  const handleDetails = async (file: UserFile) => {
+    const info = await window.electronAPI.getFileInfo(file.name)
+    if (info) {
+      setDetailsFile(info)
+    } else {
+      onNotify?.('Could not read file details.')
+    }
+  }
+
+  const handleShowInExplorer = async (file: UserFile) => {
+    const ok = await window.electronAPI.showInExplorer(file.path)
+    if (!ok) onNotify?.('Failed to open in Explorer.')
+  }
+
+  const handleOpenExternal = async (file: UserFile) => {
+    const ok = await window.electronAPI.openExternal(file.path)
+    if (!ok) onNotify?.('Failed to open with external app.')
   }
 
   return (
@@ -125,15 +226,51 @@ export default function WorkspacePane() {
                 <span className="file-name">{file.name}</span>
                 <span className="file-meta">{formatFileSize(file.size)}</span>
               </div>
-              <button
-                className="file-delete-btn"
-                onClick={() => handleDelete(file.name)}
-                title="Delete"
-              >
-                &#x2715;
-              </button>
+              <div className="file-actions">
+                <button
+                  className="file-menu-btn"
+                  title="File actions"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setOpenMenu((prev) => (prev === file.name ? null : file.name))
+                  }}
+                >
+                  ⋯
+                </button>
+                {openMenu === file.name && (
+                  <div className="file-action-menu" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => { handleSaveAs(file); setOpenMenu(null) }}>Download</button>
+                    <button onClick={() => { onOpenInEditor?.(file); setOpenMenu(null) }}>Edit</button>
+                    <button onClick={() => { handleRename(file); setOpenMenu(null) }}>Rename</button>
+                    <button onClick={() => { handleMove(file); setOpenMenu(null) }}>Move</button>
+                    <button onClick={() => { handleDuplicate(file); setOpenMenu(null) }}>Duplicate</button>
+                    <button onClick={() => { handleCopyPath(file); setOpenMenu(null) }}>Copy Path</button>
+                    <button onClick={() => { handleDetails(file); setOpenMenu(null) }}>View Details</button>
+                    <button onClick={() => { handleShowInExplorer(file); setOpenMenu(null) }}>Open in Explorer</button>
+                    <button onClick={() => { handleOpenExternal(file); setOpenMenu(null) }}>Open Externally</button>
+                    <button className="danger" onClick={() => { handleDelete(file.name); setOpenMenu(null) }}>
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {detailsFile && (
+        <div className="file-details-overlay" onClick={() => setDetailsFile(null)}>
+          <div className="file-details-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>File Details</h3>
+            <div className="file-details-row"><span>Name</span><span>{detailsFile.name}</span></div>
+            <div className="file-details-row"><span>Type</span><span>{detailsFile.type || 'unknown'}</span></div>
+            <div className="file-details-row"><span>Size</span><span>{formatFileSize(detailsFile.size)}</span></div>
+            <div className="file-details-row"><span>Created</span><span>{formatDate(detailsFile.createdAt)}</span></div>
+            <div className="file-details-row"><span>Modified</span><span>{formatDate(detailsFile.modifiedAt)}</span></div>
+            <div className="file-details-path" title={detailsFile.path}>{detailsFile.path}</div>
+            <button className="files-btn secondary" onClick={() => setDetailsFile(null)}>Close</button>
+          </div>
         </div>
       )}
     </div>

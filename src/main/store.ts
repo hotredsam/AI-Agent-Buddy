@@ -23,6 +23,8 @@ export interface Message {
 export interface Settings {
   ollamaEndpoint: string
   modelName: string
+  codingModel?: string
+  imageModel?: string
   numCtx: number
   theme: string
   apiKeys?: Record<string, string>
@@ -32,6 +34,8 @@ export interface Settings {
     allowAICodeExec: boolean
   }
   activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+  codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+  imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
 }
 
 // --- Default Settings ---
@@ -39,8 +43,12 @@ export interface Settings {
 const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
   modelName: 'glm-4.7-flash',
+  codingModel: 'glm-4.7-flash',
+  imageModel: 'gpt-image-1',
   numCtx: 8192,
   theme: 'glass',
+  codingProvider: 'ollama',
+  imageProvider: 'openai',
 }
 
 // --- Storage Paths ---
@@ -269,6 +277,37 @@ export interface UserFile {
   type: string
 }
 
+export interface UserFileInfo extends UserFile {
+  createdAt: string
+}
+
+function mapStatsToUserFile(filePath: string): UserFile {
+  const stats = fs.statSync(filePath)
+  const name = path.basename(filePath)
+  return {
+    name,
+    path: filePath,
+    size: stats.size,
+    modifiedAt: stats.mtime.toISOString(),
+    type: path.extname(name).toLowerCase() || 'unknown',
+  }
+}
+
+function mapStatsToUserFileInfo(filePath: string): UserFileInfo {
+  const base = mapStatsToUserFile(filePath)
+  const stats = fs.statSync(filePath)
+  return {
+    ...base,
+    createdAt: stats.birthtime.toISOString(),
+  }
+}
+
+function isInsideDir(baseDir: string, targetPath: string): boolean {
+  const base = path.resolve(baseDir)
+  const target = path.resolve(targetPath)
+  return target === base || target.startsWith(base + path.sep)
+}
+
 export function listUserFiles(): UserFile[] {
   ensureUserFilesDir()
   const dir = getUserFilesDir()
@@ -278,15 +317,7 @@ export function listUserFiles(): UserFile[] {
       .filter(e => e.isFile())
       .map(e => {
         const fullPath = path.join(dir, e.name)
-        const stats = fs.statSync(fullPath)
-        const ext = path.extname(e.name).toLowerCase()
-        return {
-          name: e.name,
-          path: fullPath,
-          size: stats.size,
-          modifiedAt: stats.mtime.toISOString(),
-          type: ext || 'unknown',
-        }
+        return mapStatsToUserFile(fullPath)
       })
       .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime())
   } catch {
@@ -300,14 +331,7 @@ export function importUserFile(sourcePath: string): UserFile | null {
   const destPath = path.join(getUserFilesDir(), fileName)
   try {
     fs.copyFileSync(sourcePath, destPath)
-    const stats = fs.statSync(destPath)
-    return {
-      name: fileName,
-      path: destPath,
-      size: stats.size,
-      modifiedAt: stats.mtime.toISOString(),
-      type: path.extname(fileName).toLowerCase() || 'unknown',
-    }
+    return mapStatsToUserFile(destPath)
   } catch {
     return null
   }
@@ -343,14 +367,104 @@ export function importUserFileFromBuffer(fileName: string, buffer: Buffer): User
   const destPath = path.join(getUserFilesDir(), fileName)
   try {
     fs.writeFileSync(destPath, buffer)
-    const stats = fs.statSync(destPath)
-    return {
-      name: fileName,
-      path: destPath,
-      size: stats.size,
-      modifiedAt: stats.mtime.toISOString(),
-      type: path.extname(fileName).toLowerCase() || 'unknown',
+    return mapStatsToUserFile(destPath)
+  } catch {
+    return null
+  }
+}
+
+export function createUserFile(fileName: string, content: string, directory?: string): UserFile | null {
+  ensureUserFilesDir()
+  const targetDir = directory || getUserFilesDir()
+  const resolvedDir = path.resolve(targetDir)
+
+  try {
+    fs.mkdirSync(resolvedDir, { recursive: true })
+    const filePath = path.join(resolvedDir, fileName)
+    fs.writeFileSync(filePath, content, 'utf-8')
+    return mapStatsToUserFile(filePath)
+  } catch {
+    return null
+  }
+}
+
+export function renameUserFile(oldName: string, newName: string): UserFile | null {
+  ensureUserFilesDir()
+  const baseDir = getUserFilesDir()
+  const oldPath = path.resolve(path.join(baseDir, oldName))
+  const newPath = path.resolve(path.join(baseDir, newName))
+
+  if (!isInsideDir(baseDir, oldPath) || !isInsideDir(baseDir, newPath)) {
+    return null
+  }
+
+  try {
+    fs.renameSync(oldPath, newPath)
+    return mapStatsToUserFile(newPath)
+  } catch {
+    return null
+  }
+}
+
+export function moveUserFile(fileName: string, destinationDir: string): UserFile | null {
+  ensureUserFilesDir()
+  const sourcePath = path.resolve(path.join(getUserFilesDir(), fileName))
+  if (!isInsideDir(getUserFilesDir(), sourcePath)) {
+    return null
+  }
+
+  try {
+    fs.mkdirSync(destinationDir, { recursive: true })
+    const destinationPath = path.resolve(path.join(destinationDir, path.basename(fileName)))
+    fs.renameSync(sourcePath, destinationPath)
+    return mapStatsToUserFile(destinationPath)
+  } catch (error: any) {
+    if (error?.code !== 'EXDEV') return null
+    try {
+      const destinationPath = path.resolve(path.join(destinationDir, path.basename(fileName)))
+      fs.copyFileSync(sourcePath, destinationPath)
+      fs.unlinkSync(sourcePath)
+      return mapStatsToUserFile(destinationPath)
+    } catch {
+      return null
     }
+  }
+}
+
+export function duplicateUserFile(sourceName: string, newName?: string): UserFile | null {
+  ensureUserFilesDir()
+  const baseDir = getUserFilesDir()
+  const sourcePath = path.resolve(path.join(baseDir, sourceName))
+  if (!isInsideDir(baseDir, sourcePath) || !fs.existsSync(sourcePath)) {
+    return null
+  }
+
+  const parsed = path.parse(sourceName)
+  const defaultName = `${parsed.name}_copy${parsed.ext}`
+  const targetName = (newName || defaultName).trim()
+  if (!targetName) return null
+
+  const destinationPath = path.resolve(path.join(baseDir, targetName))
+  if (!isInsideDir(baseDir, destinationPath)) {
+    return null
+  }
+
+  try {
+    fs.copyFileSync(sourcePath, destinationPath)
+    return mapStatsToUserFile(destinationPath)
+  } catch {
+    return null
+  }
+}
+
+export function getUserFileInfo(fileName: string): UserFileInfo | null {
+  ensureUserFilesDir()
+  const filePath = path.resolve(path.join(getUserFilesDir(), fileName))
+  if (!isInsideDir(getUserFilesDir(), filePath) || !fs.existsSync(filePath)) {
+    return null
+  }
+  try {
+    return mapStatsToUserFileInfo(filePath)
   } catch {
     return null
   }

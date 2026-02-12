@@ -10,10 +10,15 @@ interface ChatPaneProps {
     effectiveCtx: number
     wasClamped: boolean
   } | null
+  providerName?: string
+  providerStatus?: 'Connected' | 'Offline'
+  fallbackPolicy?: string
+  defaultCtx?: number
   modelName?: string
   agentEmoji?: string
   onSendToEditor?: (code: string) => void
   onRunInTerminal?: (command: string) => void
+  onSaveAsFile?: (code: string, language: string) => void | Promise<void>
 }
 
 /**
@@ -26,6 +31,7 @@ function renderMarkdown(
   text: string,
   onSendToEditor?: (code: string) => void,
   onRunInTerminal?: (command: string) => void,
+  onSaveAsFile?: (code: string, language: string) => void | Promise<void>,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
 
@@ -49,6 +55,7 @@ function renderMarkdown(
         code={code}
         onSendToEditor={onSendToEditor}
         onRunInTerminal={onRunInTerminal}
+        onSaveAsFile={onSaveAsFile}
       />
     )
     lastIndex = match.index + match[0].length
@@ -175,11 +182,12 @@ function renderInline(text: string, keyOffset: number): React.ReactNode[] {
 /**
  * Code block component with copy-to-clipboard, send-to-editor, and run buttons
  */
-function CodeBlock({ language, code, onSendToEditor, onRunInTerminal }: {
+function CodeBlock({ language, code, onSendToEditor, onRunInTerminal, onSaveAsFile }: {
   language: string
   code: string
   onSendToEditor?: (code: string) => void
   onRunInTerminal?: (command: string) => void
+  onSaveAsFile?: (code: string, language: string) => void | Promise<void>
 }) {
   const [copied, setCopied] = useState(false)
 
@@ -212,6 +220,11 @@ function CodeBlock({ language, code, onSendToEditor, onRunInTerminal }: {
               {'\u{25B6}'} Run
             </button>
           )}
+          {onSaveAsFile && (
+            <button className="code-block-copy" onClick={() => onSaveAsFile(code, language)} title="Save as File">
+              {'\u{1F4BE}'} Save
+            </button>
+          )}
           <button className="code-block-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy'}
           </button>
@@ -237,10 +250,15 @@ export default function ChatPane({
   streamingText,
   isStreaming,
   contextInfo,
+  providerName = 'ollama',
+  providerStatus = 'Connected',
+  fallbackPolicy = 'Auto',
+  defaultCtx = 0,
   modelName,
   agentEmoji = '\u{1F916}',
   onSendToEditor,
   onRunInTerminal,
+  onSaveAsFile,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -261,12 +279,18 @@ export default function ChatPane({
     }
   }, [messages, streamingText, autoScroll])
 
+  const ctxText = contextInfo
+    ? formatCtx(contextInfo.effectiveCtx)
+    : (defaultCtx > 0 ? formatCtx(defaultCtx) : '?')
+  const providerText = providerName.charAt(0).toUpperCase() + providerName.slice(1)
+  const modelSummary = `${providerText} · ${modelName || 'model'} · ${ctxText} ctx · ${providerStatus} · Fallback: ${fallbackPolicy}`
+
   // Render the top info bar
   const topBar = (
     <div className="chat-topbar">
-      {modelName && (
+      {(modelName || providerName) && (
         <span className="model-badge" title="Active model">
-          {modelName}
+          {modelSummary}
         </span>
       )}
       {contextInfo && (
@@ -311,7 +335,7 @@ export default function ChatPane({
           <div key={msg.id} className={`message-row ${msg.role}`}>
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(msg.content, onSendToEditor, onRunInTerminal)}
+                {renderMarkdown(msg.content, onSendToEditor, onRunInTerminal, onSaveAsFile)}
               </div>
               <div className="message-avatar">
                 {msg.role === 'user' ? '\u{1F464}' : agentEmoji}
@@ -324,7 +348,7 @@ export default function ChatPane({
           <div className="message-row assistant">
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal)}
+                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal, onSaveAsFile)}
                 <span className="streaming-cursor" />
               </div>
               <div className="message-avatar">{agentEmoji}</div>

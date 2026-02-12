@@ -1,13 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
-import type { Conversation, Message, Settings, ThemeName } from './types'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import type { Conversation, Message, Settings, ThemeName, UserFile } from './types'
 import Titlebar from './components/Titlebar'
 import Sidebar from './components/Sidebar'
 import ChatPane from './components/ChatPane'
 import Composer from './components/Composer'
 import SettingsPane from './components/SettingsPane'
 import WorkspacePane from './components/WorkspacePane'
-import EditorPane from './components/EditorPane'
+import EditorPane, { type EditorTab } from './components/EditorPane'
 import TerminalPane from './components/TerminalPane'
+import FileExplorerPane from './components/FileExplorerPane'
+import CodeMenuBar from './components/CodeMenuBar'
 import Toast, { type ToastMessage } from './components/Toast'
 import { applyTheme, THEMES } from './themes'
 
@@ -16,6 +18,8 @@ type View = 'chat' | 'settings' | 'workspace' | 'code'
 const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
   modelName: 'glm-4.7-flash',
+  codingModel: 'glm-4.7-flash',
+  imageModel: 'gpt-image-1',
   numCtx: 8192,
   theme: 'glass',
   permissions: {
@@ -24,14 +28,17 @@ const DEFAULT_SETTINGS: Settings = {
     allowAICodeExec: false,
   },
   activeProvider: 'ollama',
+  codingProvider: 'ollama',
+  imageProvider: 'openai',
 }
 
 let toastIdCounter = 0
+let untitledCounter = 0
+
 function nextToastId(): string {
   return `toast-${++toastIdCounter}`
 }
 
-/** Detect language from file extension */
 function detectLanguage(filePath: string | null): string {
   if (!filePath) return ''
   const ext = filePath.split('.').pop()?.toLowerCase() || ''
@@ -47,8 +54,25 @@ function detectLanguage(filePath: string | null): string {
   return map[ext] || ext.toUpperCase()
 }
 
+function fileNameFromPath(filePath: string): string {
+  const separator = filePath.includes('\\') ? '\\' : '/'
+  const parts = filePath.split(separator)
+  return parts[parts.length - 1] || filePath
+}
+
+function createUntitledTab(content = ''): EditorTab {
+  untitledCounter += 1
+  return {
+    id: `untitled-${untitledCounter}`,
+    filePath: null,
+    name: `untitled-${untitledCounter}.txt`,
+    content,
+    language: 'Text',
+    savedContent: '',
+  }
+}
+
 export default function App() {
-  // ---- Core state ----
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -56,27 +80,30 @@ export default function App() {
   const [view, setView] = useState<View>('chat')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
-  // ---- Editor state ----
-  const [editorFilePath, setEditorFilePath] = useState<string | null>(null)
-  const [editorContent, setEditorContent] = useState('')
-  const [editorLanguage, setEditorLanguage] = useState('')
+  const [editorTabs, setEditorTabs] = useState<EditorTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null)
+  const [recentWorkspacePaths, setRecentWorkspacePaths] = useState<string[]>([])
+  const [showExplorer, setShowExplorer] = useState(false)
+  const [showTerminal, setShowTerminal] = useState(true)
+  const [providerConnectionStatus, setProviderConnectionStatus] = useState<'Connected' | 'Offline'>('Connected')
 
-  // ---- Streaming state ----
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const streamingConvIdRef = useRef<string | null>(null)
 
-  // ---- Context window state ----
   const [contextInfo, setContextInfo] = useState<{
     requestedCtx: number
     effectiveCtx: number
     wasClamped: boolean
   } | null>(null)
 
-  // ---- Toast state ----
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
-  const addToast = useCallback((text: string, type: 'error' | 'warning' = 'error') => {
+  const addToast = useCallback((
+    text: string,
+    type: 'error' | 'warning' | 'success' = 'error'
+  ) => {
     setToasts((prev) => [...prev, { id: nextToastId(), text, type }])
   }, [])
 
@@ -84,7 +111,30 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
-  // ---- Load initial data ----
+  const activeTab = useMemo(
+    () => editorTabs.find((tab) => tab.id === activeTabId) || null,
+    [editorTabs, activeTabId]
+  )
+
+  const openOrUpdateFileTab = useCallback((filePath: string, content: string) => {
+    const tabId = filePath
+    const language = detectLanguage(filePath)
+    const name = fileNameFromPath(filePath)
+
+    setEditorTabs((prev) => {
+      const existing = prev.find((tab) => tab.id === tabId)
+      if (existing) {
+        return prev.map((tab) => (
+          tab.id === tabId
+            ? { ...tab, filePath, name, language, content, savedContent: content }
+            : tab
+        ))
+      }
+      return [...prev, { id: tabId, filePath, name, language, content, savedContent: content }]
+    })
+    setActiveTabId(tabId)
+  }, [])
+
   useEffect(() => {
     async function init() {
       try {
@@ -94,31 +144,25 @@ export default function App() {
         ])
         setConversations(convos)
         setSettings(sett)
-        applyTheme(sett.theme as any || 'glass')
+        applyTheme((sett.theme as ThemeName) || 'glass')
 
-        // Auto-select most recent conversation, or create one if empty
         if (convos.length > 0) {
           setActiveConversationId(convos[0].id)
         } else {
-          try {
-            const newConv = await window.electronAPI.createConversation()
-            setConversations([newConv])
-            setActiveConversationId(newConv.id)
-          } catch (e) {
-            console.error('Failed to bootstrap chat session:', e)
-          }
+          const newConv = await window.electronAPI.createConversation()
+          setConversations([newConv])
+          setActiveConversationId(newConv.id)
         }
 
-        // Ollama diagnostics on startup
-        try {
-          const diag = await window.electronAPI.runDiagnostics()
-          if (!diag.serverReachable) {
-            addToast('Ollama is not running. Start it with: ollama serve', 'warning')
-          } else if (!diag.modelFound) {
-            addToast(diag.error || 'Model not found. Check Settings.', 'warning')
-          }
-        } catch {
-          addToast('Could not run Ollama diagnostics.', 'warning')
+        const diag = await window.electronAPI.runDiagnostics()
+        if (!diag.serverReachable) {
+          setProviderConnectionStatus('Offline')
+          addToast('Ollama is not running. Start it with: ollama serve', 'warning')
+        } else if (!diag.modelFound && (sett.activeProvider || 'ollama') === 'ollama') {
+          addToast(diag.error || 'Model not found. Check Settings.', 'warning')
+          setProviderConnectionStatus('Connected')
+        } else {
+          setProviderConnectionStatus('Connected')
         }
       } catch (err: any) {
         addToast('Failed to initialize: ' + (err?.message || 'Unknown error'))
@@ -127,7 +171,6 @@ export default function App() {
     init()
   }, [addToast])
 
-  // ---- Load messages when active conversation changes ----
   useEffect(() => {
     if (!activeConversationId) {
       setMessages([])
@@ -139,7 +182,6 @@ export default function App() {
       .catch((err) => addToast('Failed to load messages: ' + err.message))
   }, [activeConversationId, addToast])
 
-  // ---- Subscribe to streaming events ----
   useEffect(() => {
     const unsubToken = window.electronAPI.onToken((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
@@ -149,14 +191,10 @@ export default function App() {
 
     const unsubDone = window.electronAPI.onDone((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
-        window.electronAPI
-          .listMessages(data.conversationId)
-          .then(setMessages)
-          .catch(() => {})
+        window.electronAPI.listMessages(data.conversationId).then(setMessages).catch(() => {})
         setIsStreaming(false)
         setStreamingText('')
         streamingConvIdRef.current = null
-
         window.electronAPI.listConversations().then(setConversations).catch(() => {})
       }
     })
@@ -164,10 +202,7 @@ export default function App() {
     const unsubError = window.electronAPI.onError((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
         addToast('Streaming error: ' + data.error)
-        window.electronAPI
-          .listMessages(data.conversationId)
-          .then(setMessages)
-          .catch(() => {})
+        window.electronAPI.listMessages(data.conversationId).then(setMessages).catch(() => {})
         setIsStreaming(false)
         setStreamingText('')
         streamingConvIdRef.current = null
@@ -183,10 +218,10 @@ export default function App() {
         })
         if (data.wasClamped) {
           addToast(
-            `Context window auto-reduced: ${data.requestedCtx.toLocaleString()} \u2192 ${data.effectiveCtx.toLocaleString()} tokens (saved to settings).`,
+            `Context auto-reduced: ${data.requestedCtx.toLocaleString()} -> ${data.effectiveCtx.toLocaleString()} tokens.`,
             'warning'
           )
-          setSettings(prev => {
+          setSettings((prev) => {
             const updated = { ...prev, numCtx: data.effectiveCtx }
             window.electronAPI.setSettings(updated).catch(() => {})
             return updated
@@ -202,8 +237,6 @@ export default function App() {
       unsubContextInfo()
     }
   }, [addToast])
-
-  // ---- Handlers ----
 
   const handleNewChat = useCallback(async () => {
     try {
@@ -237,51 +270,187 @@ export default function App() {
   const handleRenameConversation = useCallback(async (id: string, title: string) => {
     try {
       await window.electronAPI.renameConversation(id, title)
-      setConversations((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, title } : c))
-      )
+      setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)))
     } catch (err: any) {
       addToast('Failed to rename conversation: ' + err.message)
     }
   }, [addToast])
 
-  // ---- Editor handlers ----
   const handleOpenFile = useCallback(async () => {
-    // Use Electron dialog to pick a file, then read it
     try {
-      const file = await window.electronAPI.importFile()
-      if (file) {
-        const content = await window.electronAPI.readFile(file.path)
-        if (content !== null) {
-          setEditorFilePath(file.path)
-          setEditorContent(content)
-          setEditorLanguage(detectLanguage(file.path))
-          setView('code')
-        }
+      const filePath = await window.electronAPI.pickWorkspaceFile()
+      if (!filePath) return
+      const content = await window.electronAPI.readFile(filePath)
+      if (content === null) {
+        addToast('Failed to read selected file.')
+        return
       }
+      openOrUpdateFileTab(filePath, content)
+      setView('code')
     } catch (err: any) {
       addToast('Failed to open file: ' + err.message)
     }
-  }, [addToast])
+  }, [addToast, openOrUpdateFileTab])
+
+  const handleOpenInEditor = useCallback(async (file: UserFile) => {
+    const content = await window.electronAPI.readFile(file.path)
+    if (content === null) {
+      addToast(`Failed to open "${file.name}".`)
+      return
+    }
+    openOrUpdateFileTab(file.path, content)
+    setView('code')
+  }, [addToast, openOrUpdateFileTab])
+
+  const handleOpenPathInEditor = useCallback(async (filePath: string) => {
+    const content = await window.electronAPI.readFile(filePath)
+    if (content === null) {
+      addToast(`Failed to open "${filePath}".`)
+      return
+    }
+    openOrUpdateFileTab(filePath, content)
+    setView('code')
+  }, [addToast, openOrUpdateFileTab])
+
+  const handleOpenFolder = useCallback(async () => {
+    const picked = await window.electronAPI.pickWorkspaceFolder()
+    if (!picked) return
+    setWorkspaceRootPath(picked)
+    setShowExplorer(true)
+    setRecentWorkspacePaths((prev) => [picked, ...prev.filter((p) => p !== picked)].slice(0, 10))
+    setView('code')
+  }, [])
+
+  const handleEditorContentChange = useCallback((content: string) => {
+    if (!activeTabId) return
+    setEditorTabs((prev) => prev.map((tab) => (tab.id === activeTabId ? { ...tab, content } : tab)))
+  }, [activeTabId])
 
   const handleEditorSave = useCallback(async () => {
-    if (!editorFilePath) return
+    if (!activeTab || !activeTab.filePath) {
+      addToast('Only opened files can be saved to disk. Use chat Save for snippets.', 'warning')
+      return
+    }
+
     const perms = settings.permissions || { allowFileWrite: true, allowTerminal: true, allowAICodeExec: false }
     if (!perms.allowFileWrite) {
       addToast('File write is disabled in permissions. Enable it in Settings.', 'warning')
       return
     }
+
     try {
-      const ok = await window.electronAPI.writeFile(editorFilePath, editorContent)
+      const ok = await window.electronAPI.writeFile(activeTab.filePath, activeTab.content)
       if (!ok) {
         addToast('Failed to save file.')
+        return
       }
+      setEditorTabs((prev) => prev.map((tab) => (
+        tab.id === activeTab.id ? { ...tab, savedContent: tab.content } : tab
+      )))
+      addToast(`Saved ${activeTab.name}`, 'success')
     } catch (err: any) {
       addToast('Save error: ' + err.message)
     }
-  }, [editorFilePath, editorContent, settings.permissions, addToast])
+  }, [activeTab, settings.permissions, addToast])
 
-  // ---- AI-powered code actions (extract code blocks, run commands) ----
+  const handleSelectTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId)
+  }, [])
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    let nextActiveId: string | null = activeTabId
+    setEditorTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === tabId)
+      if (idx === -1) return prev
+      const next = prev.filter((t) => t.id !== tabId)
+      if (tabId === activeTabId) {
+        const fallback = next[idx] || next[idx - 1] || null
+        nextActiveId = fallback?.id || null
+      }
+      return next
+    })
+    setActiveTabId(nextActiveId)
+  }, [activeTabId])
+
+  const handleNewFile = useCallback(() => {
+    const tab = createUntitledTab('')
+    setEditorTabs((prev) => [...prev, tab])
+    setActiveTabId(tab.id)
+    setView('code')
+  }, [])
+
+  const handleOpenRecentFolder = useCallback(() => {
+    if (recentWorkspacePaths.length === 0) {
+      addToast('No recent folders yet.', 'warning')
+      return
+    }
+    const defaultPath = recentWorkspacePaths[0]
+    const selected = prompt(
+      'Open recent folder (paste or edit path):',
+      defaultPath
+    )?.trim()
+    if (!selected) return
+    setWorkspaceRootPath(selected)
+    setShowExplorer(true)
+    setRecentWorkspacePaths((prev) => [selected, ...prev.filter((p) => p !== selected)].slice(0, 10))
+    setView('code')
+  }, [recentWorkspacePaths, addToast])
+
+  const handleRunAICode = useCallback(async (
+    promptText: string,
+    provider: NonNullable<Settings['activeProvider']>,
+    model: string
+  ) => {
+    const context = activeTab?.content || ''
+    const result = await window.electronAPI.generateCode({
+      prompt: promptText,
+      context,
+      provider,
+      model,
+    })
+    if (!result.text) {
+      addToast(result.error || 'AI code generation failed.')
+      return
+    }
+
+    const extracted = (() => {
+      const match = result.text!.match(/```[\w-]*\n([\s\S]*?)```/)
+      return (match ? match[1] : result.text!).trim()
+    })()
+
+    if (activeTabId) {
+      setEditorTabs((prev) => prev.map((tab) => (
+        tab.id === activeTabId ? { ...tab, content: extracted } : tab
+      )))
+    } else {
+      const tab = createUntitledTab(extracted)
+      setEditorTabs((prev) => [...prev, tab])
+      setActiveTabId(tab.id)
+    }
+    addToast('Applied AI output to editor.', 'success')
+  }, [activeTab, activeTabId, addToast])
+
+  const handleSaveCodeBlockAsFile = useCallback(async (code: string, language: string) => {
+    const extByLang: Record<string, string> = {
+      typescript: 'ts', javascript: 'js', python: 'py', rust: 'rs', go: 'go',
+      java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs', ruby: 'rb', php: 'php',
+      swift: 'swift', html: 'html', css: 'css', scss: 'scss', json: 'json',
+      yaml: 'yml', xml: 'xml', markdown: 'md', sql: 'sql', shell: 'sh',
+      bash: 'sh', powershell: 'ps1',
+    }
+    const ext = extByLang[(language || '').toLowerCase()] || 'txt'
+    const defaultName = `snippet-${Date.now()}.${ext}`
+    const fileName = prompt('Save code as file name:', defaultName)?.trim()
+    if (!fileName) return
+
+    const created = await window.electronAPI.createFile(fileName, code)
+    if (created) {
+      addToast(`Saved "${fileName}" to Library.`, 'success')
+    } else {
+      addToast('Failed to save file.')
+    }
+  }, [addToast])
+
   const handleSendMessage = useCallback(async (text: string) => {
     if (!activeConversationId || isStreaming) return
 
@@ -300,12 +469,12 @@ export default function App() {
     try {
       await window.electronAPI.sendMessage(activeConversationId, text)
 
-      const conv = conversations.find(c => c.id === activeConversationId)
+      const conv = conversations.find((c) => c.id === activeConversationId)
       if (conv && conv.title === 'New Conversation') {
         const autoTitle = text.length > 40 ? text.slice(0, 40) + '...' : text
         await window.electronAPI.renameConversation(activeConversationId, autoTitle)
-        setConversations(prev =>
-          prev.map(c => c.id === activeConversationId ? { ...c, title: autoTitle } : c)
+        setConversations((prev) =>
+          prev.map((c) => (c.id === activeConversationId ? { ...c, title: autoTitle } : c))
         )
       }
     } catch (err: any) {
@@ -320,7 +489,7 @@ export default function App() {
     try {
       await window.electronAPI.setSettings(newSettings)
       setSettings(newSettings)
-      applyTheme(newSettings.theme as any || 'glass')
+      applyTheme((newSettings.theme as ThemeName) || 'glass')
     } catch (err: any) {
       addToast('Failed to save settings: ' + err.message)
     }
@@ -331,10 +500,9 @@ export default function App() {
   }, [])
 
   const handleToggleSidebar = useCallback(() => {
-    setSidebarCollapsed(prev => !prev)
+    setSidebarCollapsed((prev) => !prev)
   }, [])
 
-  // ---- Keyboard shortcuts ----
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
@@ -359,9 +527,13 @@ export default function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault()
-        setSidebarCollapsed(prev => !prev)
+        setSidebarCollapsed((prev) => !prev)
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        e.preventDefault()
+        handleOpenFile()
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault()
         handleOpenFile()
       }
@@ -370,82 +542,124 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [handleNewChat, handleOpenFile])
 
-  // ---- Derived: theme-specific agent emoji ----
   const currentTheme = THEMES[settings.theme as ThemeName] || THEMES.glass
   const agentEmoji = currentTheme.agentEmoji || '\u{1F916}'
 
-  // ---- Render ----
   return (
     <div className="app-root">
       <Titlebar />
       <div className="app-layout">
-      <Sidebar
-        conversations={conversations}
-        activeConversationId={activeConversationId}
-        view={view}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={handleToggleSidebar}
-        onSelectConversation={handleSelectConversation}
-        onNewChat={handleNewChat}
-        onDeleteConversation={handleDeleteConversation}
-        onRenameConversation={handleRenameConversation}
-        onChangeView={handleChangeView}
-      />
+        <Sidebar
+          conversations={conversations}
+          activeConversationId={activeConversationId}
+          view={view}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={handleToggleSidebar}
+          onSelectConversation={handleSelectConversation}
+          onNewChat={handleNewChat}
+          onDeleteConversation={handleDeleteConversation}
+          onRenameConversation={handleRenameConversation}
+          onChangeView={handleChangeView}
+        />
 
-      <div className="main-content">
-        {view === 'chat' && (
-          <>
-            <ChatPane
-              messages={messages}
-              streamingText={streamingText}
-              isStreaming={isStreaming}
-              contextInfo={contextInfo}
-              modelName={settings.modelName}
-              agentEmoji={agentEmoji}
-              onSendToEditor={(code) => {
-                setEditorContent(code)
-                setView('code')
-              }}
-              onRunInTerminal={(command) => {
-                // Switch to code view so user sees terminal
-                setView('code')
-              }}
-            />
-            <Composer
-              onSend={handleSendMessage}
-              disabled={isStreaming || !activeConversationId}
-            />
-          </>
-        )}
-
-        {view === 'settings' && (
-          <SettingsPane settings={settings} onSave={handleSaveSettings} />
-        )}
-
-        {view === 'workspace' && (
-          <WorkspacePane />
-        )}
-
-        {view === 'code' && (
-          <div className="workspace-split">
-            <div className="workspace-split-top">
-              <EditorPane
-                filePath={editorFilePath}
-                content={editorContent}
-                onContentChange={setEditorContent}
-                onSave={handleEditorSave}
-                language={editorLanguage}
-                onOpenFile={handleOpenFile}
+        <div className="main-content">
+          {view === 'chat' && (
+            <>
+              <ChatPane
+                messages={messages}
+                streamingText={streamingText}
+                isStreaming={isStreaming}
+                contextInfo={contextInfo}
+                modelName={settings.modelName}
+                providerName={settings.activeProvider || 'ollama'}
+                providerStatus={providerConnectionStatus}
+                fallbackPolicy={(settings.activeProvider || 'ollama') === 'ollama' ? 'Auto' : 'None'}
+                defaultCtx={settings.numCtx}
+                agentEmoji={agentEmoji}
+                onSendToEditor={(code) => {
+                  if (activeTabId) {
+                    setEditorTabs((prev) => prev.map((tab) => (
+                      tab.id === activeTabId ? { ...tab, content: code } : tab
+                    )))
+                  } else {
+                    const tab = createUntitledTab(code)
+                    setEditorTabs((prev) => [...prev, tab])
+                    setActiveTabId(tab.id)
+                  }
+                  setView('code')
+                }}
+                onRunInTerminal={() => {
+                  setView('code')
+                }}
+                onSaveAsFile={handleSaveCodeBlockAsFile}
               />
-            </div>
-            <div className="workspace-split-bottom">
-              <TerminalPane />
-            </div>
-          </div>
-        )}
-      </div>
+              <Composer onSend={handleSendMessage} disabled={isStreaming || !activeConversationId} />
+            </>
+          )}
 
-      <Toast toasts={toasts} onDismiss={dismissToast} />
+          {view === 'settings' && <SettingsPane settings={settings} onSave={handleSaveSettings} />}
+
+          {view === 'workspace' && (
+            <WorkspacePane
+              onOpenInEditor={handleOpenInEditor}
+              onNotify={addToast}
+            />
+          )}
+
+          {view === 'code' && (
+            <div className="code-layout">
+              <CodeMenuBar
+                settings={settings}
+                onSaveSettings={handleSaveSettings}
+                showExplorer={showExplorer}
+                showTerminal={showTerminal}
+                onToggleExplorer={() => setShowExplorer((prev) => !prev)}
+                onToggleTerminal={() => setShowTerminal((prev) => !prev)}
+                onNewFile={handleNewFile}
+                onOpenFile={handleOpenFile}
+                onOpenFolder={handleOpenFolder}
+                onOpenRecent={handleOpenRecentFolder}
+                onSaveFile={handleEditorSave}
+                onCloseTab={() => activeTabId ? handleCloseTab(activeTabId) : undefined}
+                onRunAI={handleRunAICode}
+              />
+              <div className="code-main-area">
+                {showExplorer && (
+                  <FileExplorerPane
+                    rootPath={workspaceRootPath}
+                    onRootPathChange={setWorkspaceRootPath}
+                    activeFilePath={activeTab?.filePath || null}
+                    onOpenFile={handleOpenPathInEditor}
+                    onNotify={addToast}
+                  />
+                )}
+                <div className="workspace-split">
+                  <div className="workspace-split-top">
+                    <EditorPane
+                      tabs={editorTabs}
+                      activeTabId={activeTabId}
+                      onSelectTab={handleSelectTab}
+                      onCloseTab={handleCloseTab}
+                      onContentChange={handleEditorContentChange}
+                      onSave={handleEditorSave}
+                      onNewFile={handleNewFile}
+                      onOpenFile={handleOpenFile}
+                      onOpenFolder={handleOpenFolder}
+                      onOpenRecent={handleOpenRecentFolder}
+                    />
+                  </div>
+                  {showTerminal && (
+                    <div className="workspace-split-bottom">
+                      <TerminalPane />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <Toast toasts={toasts} onDismiss={dismissToast} />
       </div>
     </div>
   )

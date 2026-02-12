@@ -15,8 +15,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "electron": "^40.4.0",
-    "electron-builder": "^26.7.0"
+    "electron-builder": "^26.7.0",
+    "monaco-editor": "^0.55.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

@@ -293,3 +293,17 @@ export async function runDiagnostics(endpoint: string, modelName: string): Promi
     return result
   }
 }
+
+export async function pullModel(endpoint: string, modelName: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${endpoint}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: modelName, stream: false }),
+      signal: AbortSignal.timeout(600000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}

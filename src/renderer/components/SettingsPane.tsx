@@ -21,6 +21,12 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   const [saved, setSaved] = useState(false)
   const [checkpointCopied, setCheckpointCopied] = useState(false)
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [pullModelName, setPullModelName] = useState(settings.modelName || '')
+  const [pullingModel, setPullingModel] = useState(false)
+  const [imagePrompt, setImagePrompt] = useState('A clean product hero image of a futuristic coding desk setup')
+  const [imageGenerating, setImageGenerating] = useState(false)
+  const [imageResultPath, setImageResultPath] = useState<string | null>(null)
   const [diagResult, setDiagResult] = useState<{
     serverReachable: boolean
     availableModels: string[]
@@ -31,7 +37,17 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   // Sync form when settings prop changes
   useEffect(() => {
     setForm({ ...settings })
+    setPullModelName(settings.modelName || '')
   }, [settings])
+
+  const refreshModels = useCallback(async () => {
+    try {
+      const models = await window.electronAPI.listModels()
+      setAvailableModels(models)
+    } catch {
+      setAvailableModels([])
+    }
+  }, [])
 
   // Live connection status: check on mount and every 30s
   const checkConnection = useCallback(async () => {
@@ -45,9 +61,10 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
 
   useEffect(() => {
     checkConnection()
+    refreshModels()
     const interval = setInterval(checkConnection, 30000)
     return () => clearInterval(interval)
-  }, [checkConnection])
+  }, [checkConnection, refreshModels])
 
   const handleChange = (field: keyof Settings, value: string | number) => {
     const updated = { ...form, [field]: value }
@@ -106,6 +123,40 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
     }
   }
 
+  const handlePullModel = async () => {
+    const name = pullModelName.trim()
+    if (!name) return
+    setPullingModel(true)
+    try {
+      const ok = await window.electronAPI.pullModel(name)
+      if (ok) {
+        await refreshModels()
+        const updated = { ...form, modelName: name }
+        setForm(updated)
+        onSave(updated)
+      }
+    } finally {
+      setPullingModel(false)
+    }
+  }
+
+  const handleGenerateImage = async () => {
+    setImageGenerating(true)
+    setImageResultPath(null)
+    try {
+      const result = await window.electronAPI.generateImage({
+        prompt: imagePrompt.trim(),
+        provider: form.imageProvider || 'openai',
+        model: form.imageModel || 'gpt-image-1',
+      })
+      if (result.filePath) {
+        setImageResultPath(result.filePath)
+      }
+    } finally {
+      setImageGenerating(false)
+    }
+  }
+
   return (
     <div className="settings-pane">
       {/* Main settings card */}
@@ -142,6 +193,34 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             onChange={(e) => handleChange('modelName', e.target.value)}
             placeholder="glm-4.7-flash"
           />
+          {availableModels.length > 0 && (
+            <div className="model-quick-picks">
+              {availableModels.slice(0, 8).map((model) => (
+                <button
+                  key={model}
+                  className={`model-pick-btn ${form.modelName === model ? 'active' : ''}`}
+                  onClick={() => handleChange('modelName', model)}
+                  type="button"
+                >
+                  {model}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="model-pull-row">
+            <input
+              type="text"
+              value={pullModelName}
+              onChange={(e) => setPullModelName(e.target.value)}
+              placeholder="Pull model (e.g. qwen2.5-coder:7b)"
+            />
+            <button className="settings-btn secondary" onClick={handlePullModel} disabled={pullingModel}>
+              {pullingModel ? 'Pulling...' : 'Pull'}
+            </button>
+            <button className="settings-btn secondary" onClick={refreshModels} type="button">
+              Refresh
+            </button>
+          </div>
         </div>
 
         <div className="settings-field">
@@ -274,6 +353,104 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
               </div>
             )
           })}
+        </div>
+      </div>
+
+      <div className="settings-card provider-card">
+        <h2>Coding Model</h2>
+        <span className="settings-field-hint" style={{ marginBottom: 16, display: 'block' }}>
+          Choose a dedicated provider/model for code generation in the Code view AI panel.
+        </span>
+        <div className="settings-field">
+          <label htmlFor="coding-provider">Coding Provider</label>
+          <select
+            id="coding-provider"
+            value={form.codingProvider || form.activeProvider || 'ollama'}
+            onChange={(e) => {
+              const updated = { ...form, codingProvider: e.target.value as any }
+              setForm(updated)
+              onSave(updated)
+            }}
+          >
+            <option value="ollama">Ollama (Local)</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="google">Google</option>
+            <option value="groq">Groq</option>
+          </select>
+        </div>
+        <div className="settings-field">
+          <label htmlFor="coding-model">Coding Model</label>
+          <input
+            id="coding-model"
+            type="text"
+            value={form.codingModel || form.modelName}
+            onChange={(e) => {
+              const updated = { ...form, codingModel: e.target.value }
+              setForm(updated)
+            }}
+            onBlur={() => onSave(form)}
+            placeholder="qwen2.5-coder:7b"
+          />
+        </div>
+      </div>
+
+      <div className="settings-card provider-card">
+        <h2>Image Model</h2>
+        <span className="settings-field-hint" style={{ marginBottom: 16, display: 'block' }}>
+          Configure image generation provider/model. Use `/image ...` in chat to generate.
+        </span>
+        <div className="settings-field">
+          <label htmlFor="image-provider">Image Provider</label>
+          <select
+            id="image-provider"
+            value={form.imageProvider || 'openai'}
+            onChange={(e) => {
+              const updated = { ...form, imageProvider: e.target.value as any }
+              setForm(updated)
+              onSave(updated)
+            }}
+          >
+            <option value="openai">OpenAI</option>
+            <option value="ollama">Ollama</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="google">Google</option>
+            <option value="groq">Groq</option>
+          </select>
+        </div>
+        <div className="settings-field">
+          <label htmlFor="image-model">Image Model</label>
+          <input
+            id="image-model"
+            type="text"
+            value={form.imageModel || 'gpt-image-1'}
+            onChange={(e) => {
+              const updated = { ...form, imageModel: e.target.value }
+              setForm(updated)
+            }}
+            onBlur={() => onSave(form)}
+            placeholder="gpt-image-1"
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="image-prompt">Test Prompt</label>
+          <input
+            id="image-prompt"
+            type="text"
+            value={imagePrompt}
+            onChange={(e) => setImagePrompt(e.target.value)}
+            placeholder="Describe image to generate"
+          />
+        </div>
+        <div className="settings-actions">
+          <button className="settings-btn secondary" onClick={handleGenerateImage} disabled={imageGenerating}>
+            {imageGenerating ? 'Generating...' : 'Generate Test Image'}
+          </button>
+          {imageResultPath && (
+            <span className="settings-field-hint" style={{ marginLeft: 12 }}>
+              Saved to: {imageResultPath}
+            </span>
+          )}
         </div>
       </div>
 
