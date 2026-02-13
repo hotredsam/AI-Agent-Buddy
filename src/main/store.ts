@@ -326,6 +326,13 @@ function isInsideDir(baseDir: string, targetPath: string): boolean {
   return target === base || target.startsWith(base + path.sep)
 }
 
+function sanitizeLeafName(name: string): string | null {
+  const trimmed = name.trim()
+  if (!trimmed || trimmed === '.' || trimmed === '..') return null
+  if (trimmed.includes('/') || trimmed.includes('\\')) return null
+  return trimmed
+}
+
 export function listUserFiles(): UserFile[] {
   ensureUserFilesDir()
   const dir = getUserFilesDir()
@@ -397,15 +404,82 @@ export function importUserFileFromBuffer(fileName: string, buffer: Buffer): User
 
 export function createUserFile(fileName: string, content: string, directory?: string): UserFile | null {
   ensureUserFilesDir()
-  const targetDir = directory || getUserFilesDir()
-  const resolvedDir = path.resolve(targetDir)
+  const rootDir = getUserFilesDir()
+  const safeName = sanitizeLeafName(fileName)
+  const resolvedDir = directory
+    ? path.resolve(rootDir, directory)
+    : rootDir
+
+  if (!safeName) {
+    console.error('[Store][createUserFile] Invalid file name:', fileName)
+    return null
+  }
+
+  if (!isInsideDir(rootDir, resolvedDir)) {
+    console.error('[Store][createUserFile] Security violation for directory:', directory)
+    return null
+  }
 
   try {
     fs.mkdirSync(resolvedDir, { recursive: true })
-    const filePath = path.join(resolvedDir, fileName)
+    const filePath = path.resolve(resolvedDir, safeName)
+    if (!isInsideDir(rootDir, filePath)) {
+      console.error('[Store][createUserFile] Security violation for file path:', filePath)
+      return null
+    }
     fs.writeFileSync(filePath, content, 'utf-8')
     return mapStatsToUserFile(filePath)
-  } catch {
+  } catch (error) {
+    console.error('[Store][createUserFile] Failed to create file:', {
+      fileName,
+      directory,
+      error,
+    })
+    return null
+  }
+}
+
+export function createUserProject(projectName: string): UserFile | null {
+  ensureUserFilesDir()
+  const rootDir = getUserFilesDir()
+  const safeProjectName = sanitizeLeafName(projectName)
+
+  if (!safeProjectName) {
+    console.error('[Store][createUserProject] Invalid project name:', projectName)
+    return null
+  }
+
+  const projectPath = path.resolve(rootDir, safeProjectName)
+  if (!isInsideDir(rootDir, projectPath)) {
+    console.error('[Store][createUserProject] Security violation for project path:', projectPath)
+    return null
+  }
+
+  try {
+    if (fs.existsSync(projectPath)) {
+      console.error('[Store][createUserProject] Project already exists:', projectPath)
+      return null
+    }
+
+    fs.mkdirSync(projectPath, { recursive: true })
+
+    const createdAt = new Date().toISOString()
+    const projectDocPath = path.join(projectPath, 'PROJECT.md')
+    const projectDoc = [
+      `# ${safeProjectName}`,
+      '',
+      `Created: ${createdAt}`,
+      `Workspace Root: ${projectPath}`,
+      '',
+    ].join('\n')
+    fs.writeFileSync(projectDocPath, projectDoc, 'utf-8')
+
+    return mapStatsToUserFile(projectPath)
+  } catch (error) {
+    console.error('[Store][createUserProject] Failed to create project:', {
+      projectName,
+      error,
+    })
     return null
   }
 }

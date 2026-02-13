@@ -155,6 +155,14 @@
 - Download UX refinement with dismissable shelf (User request 9)
 - Chat code block action menu expansion (User request 8)
 
+## Gemini Investigation & Handoff Preparation (2026-02-12)
+- Performed comprehensive audit of existing features vs. requirements.
+- Identified critical bugs in "Files" tab (broken project creation) and missing UI elements (AI side-pane, shell selector).
+- Documented technical and UX specifications for reaching Cursor-level parity.
+- Created `docs/CODEX_READ_THIS.md` as the primary entry point for the next agent.
+- Documented prioritized issues in `docs/ISSUES.md`.
+- No code changes performed; purely architectural and planning phase.
+
 ---
 
 ## What's Left To Do

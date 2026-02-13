@@ -71,14 +71,85 @@ export interface AgentStep {
   result?: string
 }
 
+export type AgentMode = 'plan' | 'build' | 'coding' | 'bugfix'
+export type AgentPhase = 'idle' | 'thinking' | 'writing' | 'testing' | 'done' | 'error'
+
+export interface AgentLogEntry {
+  id: string
+  timestamp: string
+  level: 'info' | 'error' | 'stdout' | 'stderr'
+  message: string
+}
+
+export interface AgentFileWrite {
+  id: string
+  timestamp: string
+  path: string
+  bytesBefore: number
+  bytesAfter: number
+  bytesChanged: number
+  preview: string
+}
+
+export interface AgentTestRun {
+  id: string
+  command: string
+  exitCode: number
+  success: boolean
+  output: string
+  startedAt: string
+  finishedAt: string
+}
+
 export interface AgentTask {
   id: string
   goal: string
-  status: 'planning' | 'waiting_approval' | 'approved' | 'running' | 'completed' | 'failed'
+  mode: AgentMode
+  status: 'planning' | 'waiting_approval' | 'approved' | 'running' | 'testing' | 'completed' | 'failed' | 'cancelled'
+  phase: AgentPhase
   plan: string
   steps: AgentStep[]
+  logs: AgentLogEntry[]
+  fileWrites: AgentFileWrite[]
+  testRuns: AgentTestRun[]
   createdAt: string
   currentStepIndex: number
+  workspaceRootPath: string | null
+  autoRunPipeline: boolean
+  cancelRequested: boolean
+  lastError?: string
+}
+
+export interface AgentTaskCreatePayload {
+  goal: string
+  mode?: AgentMode
+  workspaceRootPath?: string | null
+  autoRunPipeline?: boolean
+}
+
+export interface AgentEvent {
+  taskId: string
+  timestamp: string
+  type:
+    | 'task_created'
+    | 'planning_started'
+    | 'plan_generated'
+    | 'waiting_approval'
+    | 'approved'
+    | 'build_started'
+    | 'step_started'
+    | 'step_completed'
+    | 'file_written'
+    | 'testing_started'
+    | 'test_command_start'
+    | 'test_output'
+    | 'test_command_complete'
+    | 'task_completed'
+    | 'task_failed'
+    | 'task_cancelled'
+    | 'log'
+  message?: string
+  data?: Record<string, any>
 }
 
 // ---- Electron Bridge ----
@@ -117,6 +188,7 @@ export interface ElectronAPI {
   deleteFile: (fileName: string) => Promise<boolean>
   openFilesFolder: () => Promise<void>
   createFile: (fileName: string, content: string, directory?: string) => Promise<UserFile | null>
+  createProject: (projectName: string) => Promise<UserFile | null>
   saveFileAs: (sourcePath: string) => Promise<boolean>
   renameFile: (oldName: string, newName: string) => Promise<UserFile | null>
   moveFile: (fileName: string, destinationDir?: string) => Promise<UserFile | null>
@@ -132,11 +204,13 @@ export interface ElectronAPI {
   renameWorkspacePath: (targetPath: string, nextName: string) => Promise<string | null>
   deleteWorkspacePath: (targetPath: string) => Promise<boolean>
   
-  createAgentTask: (goal: string) => Promise<AgentTask>
+  createAgentTask: (payload: string | AgentTaskCreatePayload) => Promise<AgentTask>
   listAgentTasks: () => Promise<AgentTask[]>
   getAgentTask: (id: string) => Promise<AgentTask | undefined>
   approveAgentTask: (id: string) => Promise<AgentTask>
+  cancelAgentTask: (id: string) => Promise<AgentTask>
   onAgentUpdate: (callback: (tasks: AgentTask[]) => void) => () => void
+  onAgentEvent: (callback: (event: AgentEvent) => void) => () => void
 
   getSystemStats: () => Promise<{ freeMem: number; totalMem: number; platform: string; cpus: number }>
   windowMinimize: () => Promise<void>

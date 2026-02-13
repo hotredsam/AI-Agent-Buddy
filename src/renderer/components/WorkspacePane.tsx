@@ -106,29 +106,18 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   const handleCreateProject = async () => {
     const name = prompt('New Project Name:')
     if (!name?.trim()) return
-    // We use createWorkspaceFolder at the root level (empty parent path)
-    // But since createWorkspaceFolder requires a parentPath, we need a way to create in user-files root.
-    // However, we don't have a direct API exposed for "create folder in user-files root" except createWorkspaceFolder if we know the root path.
-    // Actually, `createFile` logic in `store.ts` handles directories if `directory` param is passed.
-    // Let's use `createWorkspaceFolder` via a new bridge or just use `createFile` to make a dummy file inside? 
-    // No, `ipc.ts` has `workspace:createFolder`. But that takes `parentPath`.
-    // We need `files:createFolder` in IPC. 
-    
-    // Workaround: Use `createFile` with a directory path? No.
-    // Better: Add `createProject` to IPC. For now, I'll rely on `createFile` making the dir if I specify it.
-    // Actually, `store.ts` `createUserFile` ensures dir exists.
-    // Let's verify `store.ts`: `ensureUserFilesDir`.
-    
-    // I'll add a proper `createFolder` to `files:` IPC later. 
-    // For now, I'll try to use `createFile` to create a README.md inside the new project folder.
-    
-    const readme = await window.electronAPI.createFile('README.md', `# ${name}\n\nProject created.`, name)
-    if (readme) {
-      // Refresh list
-      loadFiles()
-      onNotify?.(`Project "${name}" created.`, 'success')
-    } else {
-      onNotify?.('Failed to create project.')
+    try {
+      console.info('[WorkspacePane] Creating project:', name.trim())
+      const project = await window.electronAPI.createProject(name.trim())
+      if (project) {
+        loadFiles()
+        onNotify?.(`Project "${name}" created.`, 'success')
+      } else {
+        onNotify?.('Failed to create project.')
+      }
+    } catch (error: any) {
+      console.error('[WorkspacePane] createProject failed:', error)
+      onNotify?.('Failed to create project: ' + (error?.message || 'Unknown error'))
     }
   }
 

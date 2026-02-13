@@ -5,6 +5,7 @@ interface ChatPaneProps {
   messages: Message[]
   streamingText: string
   isStreaming: boolean
+  requestState?: 'idle' | 'thinking' | 'writing' | 'testing' | 'done' | 'error'
   contextInfo?: {
     requestedCtx: number
     effectiveCtx: number
@@ -25,10 +26,61 @@ interface ChatPaneProps {
 /**
  * Lightweight inline markdown renderer.
  * Handles: code blocks (```), inline code (`), bold (**), italic (*),
- * blockquotes (>), unordered lists (- or *), ordered lists (1.).
+ * blockquotes (>), unordered lists (- or *), ordered lists (1.), and <think> tags.
  * Returns an array of React nodes.
  */
 function renderMarkdown(
+  text: string,
+  onSendToEditor?: (code: string) => void,
+  onRunInTerminal?: (command: string) => void,
+  onSaveAsFile?: (code: string, language: string) => void | Promise<void>,
+  onCodeFileAction?: (action: 'add' | 'download' | 'open' | 'run', code: string, language: string) => void | Promise<void>,
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = []
+  const thinkBlockRegex = /<think>([\s\S]*?)<\/think>/gi
+  let cursor = 0
+  let thinkMatch: RegExpExecArray | null
+
+  while ((thinkMatch = thinkBlockRegex.exec(text)) !== null) {
+    if (thinkMatch.index > cursor) {
+      nodes.push(
+        ...renderMarkdownCore(
+          text.slice(cursor, thinkMatch.index),
+          onSendToEditor,
+          onRunInTerminal,
+          onSaveAsFile,
+          onCodeFileAction
+        )
+      )
+    }
+    const reasoning = (thinkMatch[1] || '').trim()
+    if (reasoning) {
+      nodes.push(
+        <ThinkingBlock
+          key={`thinking-${nodes.length}`}
+          content={reasoning}
+        />
+      )
+    }
+    cursor = thinkMatch.index + thinkMatch[0].length
+  }
+
+  if (cursor < text.length) {
+    nodes.push(
+      ...renderMarkdownCore(
+        text.slice(cursor),
+        onSendToEditor,
+        onRunInTerminal,
+        onSaveAsFile,
+        onCodeFileAction
+      )
+    )
+  }
+
+  return nodes
+}
+
+function renderMarkdownCore(
   text: string,
   onSendToEditor?: (code: string) => void,
   onRunInTerminal?: (command: string) => void,
@@ -182,6 +234,23 @@ function renderInline(text: string, keyOffset: number): React.ReactNode[] {
   return nodes
 }
 
+function ThinkingBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div className="thinking-block">
+      <button
+        className="thinking-toggle"
+        onClick={() => setExpanded((prev) => !prev)}
+      >
+        Reasoning {expanded ? '▾' : '▸'}
+      </button>
+      {expanded && (
+        <pre className="thinking-content">{content}</pre>
+      )}
+    </div>
+  )
+}
+
 /**
  * Code block component with copy-to-clipboard, send-to-editor, and run buttons
  */
@@ -276,6 +345,7 @@ export default function ChatPane({
   messages,
   streamingText,
   isStreaming,
+  requestState = 'idle',
   contextInfo,
   providerName = 'ollama',
   providerStatus = 'Connected',
@@ -312,6 +382,13 @@ export default function ChatPane({
     : (defaultCtx > 0 ? formatCtx(defaultCtx) : '?')
   const providerText = providerName.charAt(0).toUpperCase() + providerName.slice(1)
   const modelSummary = `${providerText} | ${modelName || 'model'} | ${ctxText} ctx | ${providerStatus} | Fallback: ${fallbackPolicy}`
+  const lifecycleLabel =
+    requestState === 'thinking' ? 'Thinking...' :
+    requestState === 'writing' ? 'Writing...' :
+    requestState === 'testing' ? 'Testing...' :
+    requestState === 'done' ? 'Done' :
+    requestState === 'error' ? 'Error' :
+    'Idle'
 
   // Render the top info bar
   const topBar = (
@@ -336,8 +413,8 @@ export default function ChatPane({
           )}
         </span>
       )}
-      {isStreaming && (
-        <span className="streaming-badge">Generating...</span>
+      {(isStreaming || requestState !== 'idle') && (
+        <span className={`streaming-badge lifecycle-${requestState}`}>{lifecycleLabel}</span>
       )}
     </div>
   )
@@ -388,6 +465,7 @@ export default function ChatPane({
           <div className="message-row assistant">
             <div className="message-content">
               <div className="message-bubble">
+                {requestState === 'thinking' && <span style={{ marginRight: 8 }}>Thinking...</span>}
                 <span className="streaming-cursor" />
               </div>
               <div className="message-avatar">{agentEmoji}</div>

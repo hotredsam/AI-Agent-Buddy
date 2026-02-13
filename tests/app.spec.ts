@@ -61,6 +61,22 @@ test.describe('Application Launch', () => {
     await expect(sendBtn).not.toBeDisabled();
   });
 
+  test('chat shows thinking lifecycle state when request starts', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.evaluate(() => {
+      const original = window.electronAPI.sendMessage;
+      window.electronAPI.sendMessage = (() => Promise.resolve()) as typeof original;
+    });
+
+    const textarea = window.locator('.composer-textarea');
+    await textarea.fill('Test lifecycle state');
+    await textarea.press('Enter');
+
+    await expect(window.locator('.streaming-badge.lifecycle-thinking')).toBeVisible();
+  });
+
   test('editor can create new file', async () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
@@ -98,6 +114,27 @@ test.describe('Application Launch', () => {
     await expect(xterm).toBeVisible();
   });
 
+  test('code view shows right-side ai pane', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+    await expect(window.locator('.ai-pane')).toBeVisible();
+    await expect(window.locator('.ai-pane-input')).toBeVisible();
+  });
+
+  test('build mode is blocked when no workspace is open', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+    await window.locator('.ai-pane .ai-pane-select').first().selectOption('build');
+    await window.locator('.ai-pane-input').fill('Apply build changes');
+    await window.locator('.ai-pane-run-btn').click();
+
+    await expect(window.locator('.toast-message').filter({ hasText: 'Open a project first.' })).toBeVisible();
+  });
+
   test('agents tab is visible in workspace', async () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
@@ -110,5 +147,26 @@ test.describe('Application Launch', () => {
     // Verify agents view content
     await expect(window.locator('.workspace-pane-agents')).toBeVisible();
     await expect(window.locator('h2')).toContainText('Agent Orchestration');
+  });
+
+  test('files tab can create new project', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Files"]').click();
+
+    const projectName = `TestProject-${Date.now()}`;
+    await window.evaluate((name) => {
+      window.prompt = () => name;
+    }, projectName);
+
+    await window.locator('button:has-text("+ Project")').click();
+
+    await expect.poll(async () => {
+      return await window.evaluate(async (name) => {
+        const files = await window.electronAPI.listFiles();
+        return files.some((file) => file.name === name && file.isDirectory);
+      }, projectName);
+    }).toBeTruthy();
   });
 });

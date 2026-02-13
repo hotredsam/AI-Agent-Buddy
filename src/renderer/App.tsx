@@ -10,6 +10,7 @@ import EditorPane, { type EditorTab } from './components/EditorPane'
 import TerminalPane from './components/TerminalPane'
 import FileExplorerPane from './components/FileExplorerPane'
 import CodeMenuBar from './components/CodeMenuBar'
+import AIPane from './components/AIPane'
 import Toast, { type ToastMessage } from './components/Toast'
 import { applyTheme, THEMES } from './themes'
 
@@ -97,12 +98,11 @@ export default function App() {
   const [showExplorer, setShowExplorer] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
   const [providerConnectionStatus, setProviderConnectionStatus] = useState<'Connected' | 'Offline'>('Connected')
-  const [codeAIBusy, setCodeAIBusy] = useState(false)
-  const [codeAIStatus, setCodeAIStatus] = useState('')
   const [codingModelOptions, setCodingModelOptions] = useState<string[]>([])
 
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingText, setStreamingText] = useState('')
+  const [chatRequestState, setChatRequestState] = useState<'idle' | 'thinking' | 'writing' | 'done' | 'error'>('idle')
   const streamingConvIdRef = useRef<string | null>(null)
 
   const [contextInfo, setContextInfo] = useState<{
@@ -214,6 +214,7 @@ export default function App() {
 
     const unsubToken = window.electronAPI.onToken((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
+        setChatRequestState('writing')
         setStreamingText((prev) => prev + data.token)
       }
     })
@@ -224,6 +225,8 @@ export default function App() {
         setIsStreaming(false)
         setStreamingText('')
         streamingConvIdRef.current = null
+        setChatRequestState('done')
+        setTimeout(() => setChatRequestState('idle'), 1500)
         window.electronAPI.listConversations().then(setConversations).catch(() => {})
       }
     })
@@ -235,6 +238,8 @@ export default function App() {
         setIsStreaming(false)
         setStreamingText('')
         streamingConvIdRef.current = null
+        setChatRequestState('error')
+        setTimeout(() => setChatRequestState('idle'), 2200)
       }
     })
 
@@ -432,83 +437,17 @@ export default function App() {
     setView('code')
   }, [recentWorkspacePaths, addToast])
 
-  const handleRunAICode = useCallback(async (
-    promptText: string,
-    provider: NonNullable<Settings['activeProvider']>,
-    model: string,
-    mode: 'coding' | 'plan' | 'build' | 'bugfix'
-  ) => {
-    if (mode === 'coding') {
-      // Direct code generation (original behavior)
-      setCodeAIBusy(true)
-      setCodeAIStatus('Sending request...')
-      const context = activeTab?.content || ''
-      try {
-        const timeout = new Promise<{ text: null; error: string }>((resolve) => {
-          setTimeout(() => resolve({ text: null, error: 'Request timed out. Try a smaller model or shorter prompt.' }), 90000)
-        })
-        setCodeAIStatus('Generating response...')
-        const result = await Promise.race([
-          window.electronAPI.generateCode({
-            prompt: promptText,
-            context,
-            provider,
-            model,
-            mode,
-          }),
-          timeout,
-        ])
-        if (!result.text) {
-          addToast(result.error || 'AI code generation failed.')
-          setCodeAIStatus(result.error || 'Generation failed')
-          return
-        }
-
-        const extracted = (() => {
-          const match = result.text!.match(/```[\w-]*\n([\s\S]*?)```/)
-          return (match ? match[1] : result.text!).trim()
-        })()
-
-        if (activeTabId) {
-          setEditorTabs((prev) => prev.map((tab) => (
-            tab.id === activeTabId ? { ...tab, content: extracted } : tab
-          )))
-        } else {
-          const tab = createUntitledTab(extracted)
-          setEditorTabs((prev) => [...prev, tab])
-          setActiveTabId(tab.id)
-        }
-        setCodeAIStatus('Applied to editor')
-        addToast('Applied AI output to editor.', 'success')
-      } finally {
-        setCodeAIBusy(false)
-        setTimeout(() => setCodeAIStatus(''), 2500)
-      }
+  const handleApplyAIToEditor = useCallback((content: string) => {
+    if (activeTabId) {
+      setEditorTabs((prev) => prev.map((tab) => (
+        tab.id === activeTabId ? { ...tab, content } : tab
+      )))
     } else {
-      // Agent Orchestration (Plan/Build/Bugfix)
-      try {
-        setCodeAIBusy(true)
-        setCodeAIStatus('Starting agent task...')
-        await window.electronAPI.createAgentTask(promptText) // Mode is handled by the agent based on context/prompt, or we can pass mode later
-        // Actually agent-runner currently treats everything as a "goal".
-        // We should ideally pass the mode to createAgentTask if we want specialized behavior from the start.
-        // For now, the prompt text drives the "Goal".
-        
-        addToast('Agent task started. Switching to Agents view...', 'success')
-        setView('workspace')
-        // We could also auto-select the 'agents' tab in WorkspacePane if we exposed that state, 
-        // but for now the user will see the Agents tab.
-        // To ensure the "Agents" tab is active, we might need to pass a prop or state to WorkspacePane.
-        // But WorkspacePane manages its own activeTab state. 
-        // Ideally App.tsx should control activeWorkspaceTab if we want to deep link.
-      } catch (err: any) {
-        addToast('Failed to start agent: ' + err.message)
-      } finally {
-        setCodeAIBusy(false)
-        setCodeAIStatus('')
-      }
+      const tab = createUntitledTab(content)
+      setEditorTabs((prev) => [...prev, tab])
+      setActiveTabId(tab.id)
     }
-  }, [activeTab, activeTabId, addToast])
+  }, [activeTabId])
 
   const handleRenameTab = useCallback(async (tabId: string, newName: string) => {
     const tab = editorTabs.find((t) => t.id === tabId)
@@ -612,6 +551,7 @@ export default function App() {
     setMessages((prev) => [...prev, tempUserMsg])
     setIsStreaming(true)
     setStreamingText('')
+    setChatRequestState('thinking')
     streamingConvIdRef.current = activeConversationId
 
     try {
@@ -629,6 +569,8 @@ export default function App() {
       addToast('Failed to send message: ' + err.message)
       setIsStreaming(false)
       setStreamingText('')
+      setChatRequestState('error')
+      setTimeout(() => setChatRequestState('idle'), 2200)
       streamingConvIdRef.current = null
     }
   }, [activeConversationId, isStreaming, addToast, conversations])
@@ -740,6 +682,7 @@ export default function App() {
                 messages={messages}
                 streamingText={streamingText}
                 isStreaming={isStreaming}
+                requestState={chatRequestState}
                 contextInfo={contextInfo}
                 modelName={settings.modelName}
                 providerName={settings.activeProvider || 'ollama'}
@@ -783,8 +726,6 @@ export default function App() {
           {view === 'code' && (
             <div className="code-layout">
               <CodeMenuBar
-                settings={settings}
-                onSaveSettings={handleSaveSettings}
                 showExplorer={showExplorer}
                 showTerminal={showTerminal}
                 onToggleExplorer={() => setShowExplorer((prev) => !prev)}
@@ -795,10 +736,6 @@ export default function App() {
                 onOpenRecent={handleOpenRecentFolder}
                 onSaveFile={handleEditorSave}
                 onCloseTab={() => activeTabId ? handleCloseTab(activeTabId) : undefined}
-                onRunAI={handleRunAICode}
-                aiBusy={codeAIBusy}
-                aiStatus={codeAIStatus}
-                modelOptions={codingModelOptions}
               />
               <div className="code-main-area">
                 {showExplorer && (
@@ -834,6 +771,15 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                <AIPane
+                  settings={settings}
+                  modelOptions={codingModelOptions}
+                  workspaceRootPath={workspaceRootPath}
+                  activeFileContent={activeTab?.content || ''}
+                  onSaveSettings={handleSaveSettings}
+                  onApplyToEditor={handleApplyAIToEditor}
+                  onNotify={addToast}
+                />
               </div>
             </div>
           )}

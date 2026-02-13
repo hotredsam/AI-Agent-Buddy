@@ -538,7 +538,26 @@ export function registerIpcHandlers(): void {
       content: string,
       directory?: string
     ): Promise<store.UserFile | null> => {
-      return store.createUserFile(fileName, content, directory)
+      console.info('[IPC][files:createFile] Request received:', { fileName, directory })
+      try {
+        return store.createUserFile(fileName, content, directory)
+      } catch (error) {
+        console.error('[IPC][files:createFile] Failed:', error)
+        return null
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'files:createProject',
+    async (_event: IpcMainInvokeEvent, projectName: string): Promise<store.UserFile | null> => {
+      console.info('[IPC][files:createProject] Request received:', { projectName })
+      try {
+        return store.createUserProject(projectName)
+      } catch (error) {
+        console.error('[IPC][files:createProject] Failed:', error)
+        return null
+      }
     }
   )
 
@@ -819,8 +838,23 @@ export function registerIpcHandlers(): void {
 
   // --- Agent Handlers ---
 
-  ipcMain.handle('agent:createTask', async (_event, goal: string) => {
-    return agent.createAgentTask(goal)
+  ipcMain.handle(
+    'agent:createTask',
+    async (
+      _event,
+      payload: string | {
+        goal: string
+        mode?: agent.AgentMode
+        workspaceRootPath?: string | null
+        autoRunPipeline?: boolean
+      }
+    ) => {
+      return agent.createAgentTask(payload)
+    }
+  )
+
+  ipcMain.handle('agent:cancelTask', async (_event, id: string) => {
+    return agent.cancelAgentTask(id)
   })
 
   ipcMain.handle('agent:listTasks', async () => {

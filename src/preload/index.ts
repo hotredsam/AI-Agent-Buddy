@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFilesFolder: () => ipcRenderer.invoke('files:openFolder'),
   createFile: (fileName: string, content: string, directory?: string) =>
     ipcRenderer.invoke('files:createFile', fileName, content, directory),
+  createProject: (projectName: string) => ipcRenderer.invoke('files:createProject', projectName),
   saveFileAs: (sourcePath: string) => ipcRenderer.invoke('files:saveAs', sourcePath),
   renameFile: (oldName: string, newName: string) =>
     ipcRenderer.invoke('files:renameFile', oldName, newName),
@@ -99,14 +100,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
   // --- Agent Orchestration ---
-  createAgentTask: (goal: string) => ipcRenderer.invoke('agent:createTask', goal),
+  createAgentTask: (payload: any) => ipcRenderer.invoke('agent:createTask', payload),
   listAgentTasks: () => ipcRenderer.invoke('agent:listTasks'),
   getAgentTask: (id: string) => ipcRenderer.invoke('agent:getTask', id),
   approveAgentTask: (id: string) => ipcRenderer.invoke('agent:approveTask', id),
+  cancelAgentTask: (id: string) => ipcRenderer.invoke('agent:cancelTask', id),
   onAgentUpdate: (callback: (tasks: any[]) => void) => {
     const handler = (_event: any, tasks: any[]) => callback(tasks)
     ipcRenderer.on('agent:update', handler)
     return () => ipcRenderer.removeListener('agent:update', handler)
+  },
+  onAgentEvent: (callback: (event: any) => void) => {
+    const handler = (_event: any, event: any) => callback(event)
+    ipcRenderer.on('agent:event', handler)
+    return () => ipcRenderer.removeListener('agent:event', handler)
   },
 
   // --- Terminal (PTY) ---
