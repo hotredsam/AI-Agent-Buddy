@@ -123,6 +123,181 @@ test.describe('Application Launch', () => {
     await expect(window.locator('.ai-pane-input')).toBeVisible();
   });
 
+  test('ai pane keeps input near bottom', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+
+    await expect.poll(async () => {
+      return await window.evaluate(() => {
+        const pane = document.querySelector('.ai-pane');
+        const input = document.querySelector('.ai-pane-input');
+        if (!pane || !input) return false;
+        const paneRect = pane.getBoundingClientRect();
+        const inputRect = input.getBoundingClientRect();
+        return inputRect.bottom > paneRect.bottom - 180;
+      });
+    }).toBeTruthy();
+  });
+
+  test('ai pane mode dropdown has readable contrast', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+
+    const contrastOk = await window.evaluate(() => {
+      const select = document.querySelector('.ai-pane-select') as HTMLSelectElement | null;
+      if (!select) return false;
+      const style = getComputedStyle(select);
+      const bg = style.backgroundColor.replace(/\s+/g, '');
+      const fg = style.color.replace(/\s+/g, '');
+      return bg !== fg && bg !== 'rgba(0,0,0,0)' && fg !== 'rgba(0,0,0,0)';
+    });
+    expect(contrastOk).toBeTruthy();
+  });
+
+  test('approve button invokes approval flow from plan state', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    const workspacePath = await window.evaluate(async () => {
+      const projectName = `ApproveFlowWorkspace-${Date.now()}`;
+      const created = await window.electronAPI.createProject(projectName);
+      return created?.path || null;
+    });
+    expect(workspacePath).toBeTruthy();
+
+    await window.evaluate(async (workspaceRootPath) => {
+      const now = new Date().toISOString();
+      await window.electronAPI.testClearAgentTasks();
+      await window.electronAPI.testCreateAgentTaskFixture({
+        id: 'fake-plan-task',
+        goal: 'fake goal',
+        mode: 'plan',
+        status: 'waiting_approval',
+        phase: 'done',
+        plan: '1. fake plan',
+        steps: [],
+        logs: [],
+        fileWrites: [],
+        testRuns: [],
+        createdAt: now,
+        currentStepIndex: 0,
+        workspaceRootPath,
+        autoRunPipeline: false,
+        cancelRequested: false,
+      });
+    }, workspacePath);
+
+    await window.locator('button[title="Code Editor"]').click();
+    await expect(window.locator('button:has-text("Approve Plan")')).toBeEnabled();
+    await window.locator('button:has-text("Approve Plan")').click();
+
+    await expect.poll(async () => {
+      return await window.evaluate(async () => {
+        const tasks = await window.electronAPI.listAgentTasks();
+        const task = tasks.find((t) => t.id === 'fake-plan-task');
+        return task?.status || 'missing';
+      });
+    }).not.toBe('waiting_approval');
+  });
+
+  test('window maximize can restore back down', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    const before = await window.evaluate(async () => {
+      return await window.electronAPI.windowIsMaximized();
+    });
+    expect(before).toBeFalsy();
+
+    const afterMax = await window.evaluate(async () => {
+      await window.electronAPI.windowMaximize();
+      return await window.electronAPI.windowIsMaximized();
+    });
+    expect(afterMax).toBeTruthy();
+
+    const afterRestore = await window.evaluate(async () => {
+      await window.electronAPI.windowMaximize();
+      return await window.electronAPI.windowIsMaximized();
+    });
+    expect(afterRestore).toBeFalsy();
+  });
+
+  test('sidebar collapsed nav is vertically stacked', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Collapse sidebar"]').click();
+    const isVertical = await window.evaluate(() => {
+      const nav = document.querySelector('.sidebar.collapsed .sidebar-nav');
+      if (!nav) return false;
+      return getComputedStyle(nav).flexDirection === 'column';
+    });
+    expect(isVertical).toBeTruthy();
+  });
+
+  test('terminal supports shell selector, tabs, and split', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+
+    await expect(window.locator('.terminal-shell-select')).toBeVisible();
+    const initialTabs = await window.locator('.terminal-tab').count();
+    await window.locator('button[title="New terminal"]').click();
+    await expect.poll(async () => await window.locator('.terminal-tab').count()).toBeGreaterThan(initialTabs);
+
+    await window.locator('button[title="Toggle split"]').click();
+    await expect(window.locator('.terminal-sessions.split-horizontal')).toBeVisible();
+  });
+
+  test('ai pane scroll supports long logs', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.evaluate(async () => {
+      const now = new Date().toISOString();
+      await window.electronAPI.testClearAgentTasks();
+      await window.electronAPI.testCreateAgentTaskFixture({
+        id: 'scroll-task',
+        goal: 'long logs',
+        mode: 'plan',
+        status: 'waiting_approval',
+        phase: 'done',
+        plan: '1. long logs',
+        steps: [],
+        logs: Array.from({ length: 120 }).map((_, idx) => ({
+          id: `l-${idx}`,
+          timestamp: now,
+          level: 'info',
+          message: `log-${idx}`.repeat(8),
+        })),
+        fileWrites: [],
+        testRuns: [],
+        createdAt: now,
+        currentStepIndex: 0,
+        workspaceRootPath: null,
+        autoRunPipeline: false,
+        cancelRequested: false,
+      });
+    });
+
+    await window.locator('button[title="Code Editor"]').click();
+    await expect(window.locator('.ai-pane-scroll')).toBeVisible();
+
+    const scrolled = await window.evaluate(() => {
+      const scroller = document.querySelector('.ai-pane-scroll') as HTMLDivElement | null;
+      if (!scroller) return false;
+      if (scroller.scrollHeight <= scroller.clientHeight) return false;
+      scroller.scrollTop = scroller.scrollHeight;
+      return scroller.scrollTop > 0;
+    });
+    expect(scrolled).toBeTruthy();
+  });
+
   test('build mode is blocked when no workspace is open', async () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
@@ -165,7 +340,9 @@ test.describe('Application Launch', () => {
     await expect.poll(async () => {
       return await window.evaluate(async (name) => {
         const files = await window.electronAPI.listFiles();
-        return files.some((file) => file.name === name && file.isDirectory);
+        const match = files.find((file) => file.name === name && file.isDirectory);
+        if (!match) return false;
+        return /user-files[\\/]+projects/i.test(match.path);
       }, projectName);
     }).toBeTruthy();
   });

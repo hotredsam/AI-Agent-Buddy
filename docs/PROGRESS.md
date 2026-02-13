@@ -1,3 +1,81 @@
+## P0-R3 AI Pane Workflow Reliability + UX Fixes (2026-02-13)
+- Fixed Plan approval flow reliability:
+  - `runAgentTask` now treats approved `plan` tasks as build-entry tasks (no dead-end approve path).
+  - Added test-only task fixture IPC for deterministic Playwright approval-flow validation (without mutating frozen `electronAPI` methods).
+- Improved Code-tab AI pane UX:
+  - bottom-pinned input/footer with a dedicated scroll container for long logs/plans.
+  - readable dark dropdown styles for mode/provider controls.
+  - runtime diagnostics section (active requests/models, image model state, last unload).
+- Added live reasoning parsing improvements:
+  - supports partial/open `<think>` blocks during streaming.
+  - reasoning block updates live while streaming and remains collapsible.
+- Verification:
+  - `npm run build` passed.
+  - `npx playwright test tests/app.spec.ts` passed (17/17).
+
+## P0-R4 Runtime Diagnostics, Cancellation, and Local Image Flow (2026-02-13)
+- Added runtime request tracking in main process:
+  - active request count + active model list + request metadata.
+  - image model loaded flag + last unload timestamp.
+  - broadcast channel: `runtime:diagnostics`.
+- Added Ollama concurrency/resource protections:
+  - blocks concurrent Ollama inferences by default to prevent duplicate background model runs.
+  - unloads prior tracked model when switching models (best-effort), with timestamp tracking.
+- Added explicit chat cancellation path:
+  - IPC `chat:cancel` with `AbortController` cleanup.
+  - renderer stop control in composer (send button becomes stop while streaming).
+- Implemented local `/image` support path:
+  - `imageProvider = ollama` now calls local OpenAI-compatible image endpoint (`/v1/images/generations`).
+  - image responses (`b64_json` or URL fallback) are saved to local library and rendered inline in chat.
+  - image request placeholder shown while generating.
+- Hardened terminal IPC crash path:
+  - guarded PTY event sends to destroyed renderers.
+  - auto-kills PTY sessions when associated renderer is destroyed.
+- Verification:
+  - `npm run build` passed.
+  - `npx playwright test tests/app.spec.ts` passed (17/17).
+
+## P1-R1 Terminal + Files UX (2026-02-13)
+- Terminal:
+  - added shell discovery + selector (`PowerShell`, `CMD`, `Git Bash`, `WSL` when available).
+  - added multi-terminal tabs, add terminal action, terminal list menu, and basic split mode.
+- Files tab:
+  - added right-click context menu for file/folder actions.
+  - implemented drag/drop move into folders via `files:moveFile` (real filesystem move).
+  - added drop-target highlight feedback.
+- Sidebar/hamburger navigation:
+  - switched nav button stack to vertical layout (no horizontal tiny-tab row).
+- Verification:
+  - `npm run build` passed.
+  - `npx playwright test tests/app.spec.ts` passed (17/17), including:
+    - terminal shell selector/tabs/split
+    - sidebar vertical stack
+    - AI pane scrolling/approve flow
+    - project creation path checks
+
+## P0-R1 Project Creation Reliability + Instrumentation (2026-02-13)
+- Standardized project library root to `userData/user-files/projects` (explicit projects root).
+- Added deeper instrumentation for project creation:
+  - renderer: `WorkspacePane` logs click chain and post-create existence checks
+  - preload: `createProject` bridge invocation logs
+  - main IPC: existing request logs retained
+  - store: logs for function call, selected root/path, mkdir/write success/failure
+- Improved user-visible failure message for duplicate/existing project names.
+- Verification:
+  - `npm run build` passed.
+  - `npx playwright test tests/app.spec.ts --grep "files tab can create new project"` passed.
+  - Test now also asserts created project path is under `user-files/projects`.
+
+## P0-R2 Window Maximize/Restore Regression (2026-02-13)
+- Explicitly enabled frameless window resize-related capabilities in BrowserWindow config (`resizable`, `maximizable`, `fullscreenable`, etc.).
+- Hardened maximize IPC behavior:
+  - toggles maximize/unmaximize reliably
+  - exits fullscreen before restore/maximize toggle to prevent stuck fullscreen state
+- Added window state event channel (`window:stateChanged`) and renderer subscription so titlebar state stays synced after OS/window manager actions.
+- Verification:
+  - `npm run build` passed.
+  - `npx playwright test tests/app.spec.ts --grep "window maximize can restore back down"` passed.
+
 ## P0-1 Project Creation Fix (2026-02-13)
 - Implemented explicit `files:createProject` flow and replaced the old `createFile` workaround from the `+ Project` button.
 - Fixed `createUserFile` path resolution to always resolve relative to `user-files` and added inside-root security checks.
