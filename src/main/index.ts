@@ -31,10 +31,12 @@ function createWindow(): void {
     minimizable: true,
     maximizable: true,
     fullscreenable: true,
-    backgroundColor: '#000c0c14', // Hex with alpha, though Electron might ignore alpha in backgroundColor if transparent: true is set
+    hasShadow: true,
+    thickFrame: true,
+    backgroundColor: '#0c0c14',
     show: false,
     frame: false,
-    transparent: true, // Enable transparency
+    transparent: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -43,6 +45,9 @@ function createWindow(): void {
     },
   })
 
+  // Ensure edge resizing stays enabled in frameless mode.
+  mainWindow.setResizable(true)
+
   // Show window when content is ready (prevents white flash)
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
@@ -50,6 +55,7 @@ function createWindow(): void {
 
   const sendWindowState = () => {
     if (!mainWindow) return
+    if (mainWindow.webContents.isDestroyed()) return
     mainWindow.webContents.send('window:stateChanged', {
       isMaximized: mainWindow.isMaximized(),
       isFullScreen: mainWindow.isFullScreen(),

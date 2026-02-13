@@ -186,6 +186,7 @@ export interface ElectronAPI {
   setSettings: (settings: Partial<Settings>) => Promise<void>
   checkHealth: () => Promise<boolean>
   listModels: () => Promise<string[]>
+  listImageModels: () => Promise<string[]>
   pullModel: (modelName: string) => Promise<boolean>
   runDiagnostics: () => Promise<{
     serverReachable: boolean
@@ -228,7 +229,7 @@ export interface ElectronAPI {
   createAgentTask: (payload: string | AgentTaskCreatePayload) => Promise<AgentTask>
   listAgentTasks: () => Promise<AgentTask[]>
   getAgentTask: (id: string) => Promise<AgentTask | undefined>
-  approveAgentTask: (id: string) => Promise<AgentTask>
+  approveAgentTask: (id: string, workspaceRootPath?: string | null) => Promise<AgentTask>
   cancelAgentTask: (id: string) => Promise<AgentTask>
   testCreateAgentTaskFixture: (payload: Partial<AgentTask>) => Promise<AgentTask>
   testClearAgentTasks: () => Promise<boolean>

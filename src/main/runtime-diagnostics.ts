@@ -38,7 +38,12 @@ function nowIso(): string {
 function broadcastDiagnostics() {
   const snapshot = getRuntimeDiagnostics()
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('runtime:diagnostics', snapshot)
+    try {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+      win.webContents.send('runtime:diagnostics', snapshot)
+    } catch {
+      // Ignore renderer lifecycle races.
+    }
   }
 }
 

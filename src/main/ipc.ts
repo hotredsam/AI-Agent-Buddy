@@ -1,4 +1,4 @@
-import { ipcMain, IpcMainInvokeEvent, dialog, shell, BrowserWindow } from 'electron'
+import { ipcMain, IpcMainInvokeEvent, dialog, shell, BrowserWindow, WebContents } from 'electron'
 import { spawn, spawnSync } from 'child_process'
 import * as os from 'os'
 import * as fs from 'fs'
@@ -6,7 +6,16 @@ import * as path from 'path'
 import * as pty from 'node-pty'
 import * as store from './store'
 import * as agent from './agent-runner'
-import { sendMessageStream, checkHealth, listModels, runDiagnostics, pullModel, OllamaChatMessage, StreamMeta } from './ollama'
+import {
+  sendMessageStream,
+  checkHealth,
+  listModels,
+  listImageModels,
+  runDiagnostics,
+  pullModel,
+  OllamaChatMessage,
+  StreamMeta,
+} from './ollama'
 import { sendOpenAIStream } from './openai'
 import { sendAnthropicStream } from './anthropic'
 import { sendGoogleStream } from './google'
@@ -133,6 +142,15 @@ function resolveRequestSignal(abortSignal?: AbortSignal): AbortSignal {
     return abortSignal || timeoutSignal
   }
   return anyFn([timeoutSignal, abortSignal])
+}
+
+function safeRendererSend(sender: WebContents, channel: string, payload: any): void {
+  try {
+    if (!sender || sender.isDestroyed()) return
+    sender.send(channel, payload)
+  } catch {
+    // Renderer is gone or channel send failed; ignore to avoid crashing main process.
+  }
 }
 
 export async function generateCodeWithProvider(
@@ -297,11 +315,36 @@ async function generateImageWithProvider(
   providerOverride?: Provider,
   modelOverride?: string
 ): Promise<{ filePath: string | null; error?: string }> {
-  const provider = providerOverride || settings.imageProvider || 'openai'
-  const model = modelOverride || settings.imageModel || 'gpt-image-1'
+  const provider = providerOverride || settings.imageProvider || 'ollama'
   const apiKeys = settings.apiKeys || {}
   const imageSystemPrompt = settings.systemPrompts?.image || ''
   const mergedPrompt = imageSystemPrompt ? `${imageSystemPrompt}\n\n${prompt}` : prompt
+
+  let model = (modelOverride || settings.imageModel || '').trim()
+  if (provider === 'ollama') {
+    const discoveredModels = await listImageModels(settings.ollamaEndpoint)
+    if (discoveredModels.length === 0) {
+      return {
+        filePath: null,
+        error: 'No local image models detected. Install one with `ollama pull <model>` and select it in Settings > Image Model.',
+      }
+    }
+    const hasMatch = model.length > 0 && discoveredModels.some((name) => (
+      name === model || name.startsWith(model + ':') || model.startsWith(name + ':')
+    ))
+    if (!hasMatch) {
+      model = discoveredModels[0]
+    }
+  }
+  if (!model && provider === 'openai') {
+    model = 'gpt-image-1'
+  }
+  if (!model) {
+    return {
+      filePath: null,
+      error: 'No image model selected. Choose one in Settings > Image Model.',
+    }
+  }
 
   const writeImageBuffer = async (buffer: Buffer): Promise<string> => {
     store.ensureUserFilesDir()
@@ -358,7 +401,11 @@ async function generateImageWithProvider(
       })
       if (!response.ok) {
         const details = await response.text()
-        return { filePath: null, error: `Ollama image error (${response.status}): ${details || 'Unknown error'}` }
+        const available = await listImageModels(settings.ollamaEndpoint)
+        const availableInfo = available.length > 0
+          ? ` Available local models: ${available.join(', ')}.`
+          : ' No local models detected. Install one with `ollama pull <model>`.'
+        return { filePath: null, error: `Ollama image error (${response.status}): ${details || 'Unknown error'}.${availableInfo}` }
       }
       const data: any = await response.json()
       const b64 = data?.data?.[0]?.b64_json
@@ -453,6 +500,7 @@ export function registerIpcHandlers(): void {
       userText: string,
       settings?: Partial<store.Settings>
     ): Promise<void> => {
+      const sender = event.sender
       const existingController = chatAbortControllers.get(conversationId)
       if (existingController) {
         existingController.abort()
@@ -476,9 +524,9 @@ export function registerIpcHandlers(): void {
           const normalizedImagePath = imageResult.filePath.replace(/\\/g, '/')
           const message = `![Generated image](${normalizedImagePath})\n\nImage generated and saved:\n${imageResult.filePath}`
           store.addMessage(conversationId, 'assistant', message)
-          event.sender.send('chat:done', { conversationId, fullResponse: message })
+          safeRendererSend(sender, 'chat:done', { conversationId, fullResponse: message })
         } else {
-          event.sender.send('chat:error', {
+          safeRendererSend(sender, 'chat:error', {
             conversationId,
             error: imageResult.error || 'Image generation failed.',
           })
@@ -541,7 +589,7 @@ export function registerIpcHandlers(): void {
             effectiveSettings.numCtx,
             (meta: StreamMeta) => {
               // Notify renderer of effective context window
-              event.sender.send('chat:contextInfo', {
+              safeRendererSend(sender, 'chat:contextInfo', {
                 conversationId,
                 requestedCtx: meta.requestedCtx,
                 effectiveCtx: meta.effectiveCtx,
@@ -555,7 +603,7 @@ export function registerIpcHandlers(): void {
         for await (const token of stream) {
           fullResponse += token
           // Send each token to the renderer
-          event.sender.send('chat:token', {
+          safeRendererSend(sender, 'chat:token', {
             conversationId,
             token,
           })
@@ -565,7 +613,7 @@ export function registerIpcHandlers(): void {
         store.addMessage(conversationId, 'assistant', fullResponse)
 
         // Notify the renderer that streaming is complete
-        event.sender.send('chat:done', {
+        safeRendererSend(sender, 'chat:done', {
           conversationId,
           fullResponse,
         })
@@ -601,7 +649,7 @@ export function registerIpcHandlers(): void {
         }
 
         // Notify the renderer of the error
-        event.sender.send('chat:error', {
+        safeRendererSend(sender, 'chat:error', {
           conversationId,
           error: errorMessage,
         })
@@ -701,6 +749,14 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'ollama:listImageModels',
+    async (): Promise<string[]> => {
+      const settings = store.getSettings()
+      return listImageModels(settings.ollamaEndpoint)
+    }
+  )
+
+  ipcMain.handle(
     'ollama:diagnostics',
     async (): Promise<{
       serverReachable: boolean
@@ -768,14 +824,20 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'files:createProject',
-    async (_event: IpcMainInvokeEvent, projectName: string): Promise<store.UserFile | null> => {
+    async (_event: IpcMainInvokeEvent, projectName: string): Promise<store.UserFile> => {
       console.info('[IPC][files:createProject] Request received:', { projectName })
-      try {
-        return store.createUserProject(projectName)
-      } catch (error) {
-        console.error('[IPC][files:createProject] Failed:', error)
-        return null
+      const created = store.createUserProject(projectName)
+      if (created) {
+        return created
       }
+
+      const normalizedName = projectName.trim().toLowerCase()
+      const exists = store.listUserFiles().some((file) => file.isDirectory && file.name.toLowerCase() === normalizedName)
+      const errorMessage = exists
+        ? `Project "${projectName}" already exists.`
+        : `Failed to create project "${projectName}".`
+      console.error('[IPC][files:createProject] Failed:', errorMessage)
+      throw new Error(errorMessage)
     }
   )
 
@@ -999,7 +1061,7 @@ export function registerIpcHandlers(): void {
       return false
     }
     if (win?.isMaximized()) {
-      win.unmaximize()
+      win.restore()
       return false
     } else {
       win?.maximize()
@@ -1101,8 +1163,8 @@ export function registerIpcHandlers(): void {
     return agent.getAgentTask(id)
   })
 
-  ipcMain.handle('agent:approveTask', async (_event, id: string) => {
-    return agent.approveAgentTask(id)
+  ipcMain.handle('agent:approveTask', async (_event, id: string, workspaceRootPath?: string | null) => {
+    return agent.approveAgentTask(id, workspaceRootPath)
   })
 
   if (process.env.NODE_ENV === 'test') {
@@ -1132,6 +1194,7 @@ export function registerIpcHandlers(): void {
       event: IpcMainInvokeEvent,
       options: { cwd?: string; cols?: number; rows?: number; shellId?: string }
     ): Promise<number> => {
+      const sender = event.sender
       const shell = resolveTerminalShell(options.shellId)
       if (!shell.available) {
         throw new Error(`Requested shell "${options.shellId || shell.id}" is not available on this system.`)
@@ -1152,28 +1215,10 @@ export function registerIpcHandlers(): void {
         shellCommand: shell.command,
       })
 
-      const sendSafe = (channel: string, payload: any) => {
-        try {
-          if (!event.sender.isDestroyed()) {
-            event.sender.send(channel, payload)
-          }
-        } catch {
-          // Renderer is gone; ignore send failures.
-        }
-      }
-
-      ptyProcess.onData((data) => {
-        sendSafe(`terminal:data:${ptyId}`, data)
-      })
-
-      ptyProcess.onExit(({ exitCode, signal }) => {
-        sendSafe(`terminal:exit:${ptyId}`, { exitCode, signal })
-        ptyProcesses.delete(ptyId)
-      })
-
-      ptyProcesses.set(ptyId, ptyProcess)
-
-      event.sender.once('destroyed', () => {
+      let cleanedUp = false
+      const cleanupPty = () => {
+        if (cleanedUp) return
+        cleanedUp = true
         const proc = ptyProcesses.get(ptyId)
         if (!proc) return
         try {
@@ -1182,7 +1227,28 @@ export function registerIpcHandlers(): void {
           // Ignore kill errors for already-exited PTYs.
         }
         ptyProcesses.delete(ptyId)
+      }
+
+      const sendTerminalEvent = (channel: string, payload: any) => {
+        if (sender.isDestroyed()) {
+          cleanupPty()
+          return
+        }
+        safeRendererSend(sender, channel, payload)
+      }
+
+      ptyProcess.onData((data) => {
+        sendTerminalEvent(`terminal:data:${ptyId}`, data)
       })
+
+      ptyProcess.onExit(({ exitCode, signal }) => {
+        sendTerminalEvent(`terminal:exit:${ptyId}`, { exitCode, signal })
+        ptyProcesses.delete(ptyId)
+      })
+
+      ptyProcesses.set(ptyId, ptyProcess)
+
+      sender.once('destroyed', cleanupPty)
 
       return ptyId
     }

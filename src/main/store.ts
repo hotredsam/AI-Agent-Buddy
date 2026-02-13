@@ -52,11 +52,11 @@ const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
   modelName: 'glm-4.7-flash',
   codingModel: 'glm-4.7-flash',
-  imageModel: 'gpt-image-1',
+  imageModel: '',
   numCtx: 8192,
   theme: 'glass',
   codingProvider: 'ollama',
-  imageProvider: 'openai',
+  imageProvider: 'ollama',
   permissions: {
     allowTerminal: true,
     allowFileWrite: true,

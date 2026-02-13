@@ -124,16 +124,26 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+function safeWindowSend(win: BrowserWindow, channel: string, payload: any): void {
+  try {
+    if (win.isDestroyed()) return
+    if (win.webContents.isDestroyed()) return
+    win.webContents.send(channel, payload)
+  } catch {
+    // Ignore renderer lifecycle races to keep main process stable.
+  }
+}
+
 function broadcastUpdate() {
   const tasks = listAgentTasks()
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:update', tasks)
+    safeWindowSend(win, 'agent:update', tasks)
   }
 }
 
 function broadcastEvent(event: AgentEvent) {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:event', event)
+    safeWindowSend(win, 'agent:event', event)
   }
 }
 
@@ -145,6 +155,25 @@ function isInsideDir(baseDir: string, targetPath: string): boolean {
 
 function toRelativePath(baseDir: string, targetPath: string): string {
   return path.relative(baseDir, targetPath).split(path.sep).join('/')
+}
+
+function createAutoWorkspaceProject(goal: string): string {
+  const baseSlug = goal
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36) || 'agent-project'
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const suffix = attempt === 0 ? '' : `-${attempt + 1}`
+    const candidateName = `${baseSlug}${suffix}`
+    const created = store.createUserProject(candidateName)
+    if (created?.isDirectory && created.path) {
+      return created.path
+    }
+  }
+
+  throw new Error('Failed to auto-create workspace project.')
 }
 
 function emitEvent(task: AgentTask, type: AgentEvent['type'], message?: string, data?: Record<string, any>) {
@@ -448,11 +477,25 @@ export async function createAgentTask(input: string | AgentTaskCreatePayload): P
   return task
 }
 
-export async function approveAgentTask(taskId: string): Promise<AgentTask> {
+export async function approveAgentTask(taskId: string, workspaceRootPath?: string | null): Promise<AgentTask> {
   const task = activeTasks.get(taskId)
   if (!task) throw new Error('Task not found.')
   if (task.status !== 'waiting_approval') throw new Error('Task is not waiting for approval.')
   if (task.cancelRequested) throw new Error('Task has been cancelled.')
+
+  if (workspaceRootPath && workspaceRootPath.trim()) {
+    const resolved = path.resolve(workspaceRootPath)
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      throw new Error('Selected workspace folder is not available.')
+    }
+    task.workspaceRootPath = resolved
+  }
+
+  if (!task.workspaceRootPath && task.mode === 'plan') {
+    const autoWorkspace = createAutoWorkspaceProject(task.goal)
+    task.workspaceRootPath = path.resolve(autoWorkspace)
+    appendLog(task, `Auto-created workspace project: ${task.workspaceRootPath}`)
+  }
 
   if (task.mode !== 'plan' && !task.workspaceRootPath) {
     throw new Error('Open a project first.')

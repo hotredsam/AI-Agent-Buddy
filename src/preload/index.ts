@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // --- Health Check ---
   checkHealth: () => ipcRenderer.invoke('ollama:health'),
   listModels: () => ipcRenderer.invoke('ollama:listModels'),
+  listImageModels: () => ipcRenderer.invoke('ollama:listImageModels'),
   runDiagnostics: () => ipcRenderer.invoke('ollama:diagnostics'),
   pullModel: (modelName: string) => ipcRenderer.invoke('ollama:pullModel', modelName),
 
@@ -120,7 +121,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createAgentTask: (payload: any) => ipcRenderer.invoke('agent:createTask', payload),
   listAgentTasks: () => ipcRenderer.invoke('agent:listTasks'),
   getAgentTask: (id: string) => ipcRenderer.invoke('agent:getTask', id),
-  approveAgentTask: (id: string) => ipcRenderer.invoke('agent:approveTask', id),
+  approveAgentTask: (id: string, workspaceRootPath?: string | null) => ipcRenderer.invoke('agent:approveTask', id, workspaceRootPath),
   cancelAgentTask: (id: string) => ipcRenderer.invoke('agent:cancelTask', id),
   testCreateAgentTaskFixture: (payload: any) => ipcRenderer.invoke('test:agent:createFixture', payload),
   testClearAgentTasks: () => ipcRenderer.invoke('test:agent:clear'),

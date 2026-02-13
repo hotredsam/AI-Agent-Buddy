@@ -31,6 +31,17 @@ export interface StreamMeta {
   wasClamped: boolean
 }
 
+interface OllamaTagModel {
+  name?: string
+  model?: string
+  capabilities?: unknown
+  details?: {
+    capabilities?: unknown
+    family?: string
+    families?: unknown
+  }
+}
+
 function resolveStreamSignal(abortSignal?: AbortSignal): AbortSignal {
   const timeoutSignal = AbortSignal.timeout(600000)
   const anyFn = (AbortSignal as any).any as ((signals: AbortSignal[]) => AbortSignal) | undefined
@@ -222,10 +233,7 @@ export async function checkHealth(endpoint: string): Promise<boolean> {
   }
 }
 
-/**
- * Lists all locally available Ollama models.
- */
-export async function listModels(endpoint: string): Promise<string[]> {
+async function listTagModels(endpoint: string): Promise<OllamaTagModel[]> {
   try {
     const response = await fetch(`${endpoint}/api/tags`, {
       method: 'GET',
@@ -233,14 +241,66 @@ export async function listModels(endpoint: string): Promise<string[]> {
     })
     if (!response.ok) return []
     const data: any = await response.json()
-    if (data && Array.isArray(data.models)) {
-      return data.models.map((m: any) => m.name || m.model || '')
-        .filter((n: string) => n.length > 0)
-    }
-    return []
+    if (!data || !Array.isArray(data.models)) return []
+    return data.models as OllamaTagModel[]
   } catch {
     return []
   }
+}
+
+function normalizeModelName(model: OllamaTagModel): string {
+  const value = model.name || model.model || ''
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter((item) => item.length > 0)
+}
+
+function hasExplicitImageCapability(model: OllamaTagModel): boolean {
+  const capabilities = [
+    ...normalizeStringArray(model.capabilities),
+    ...normalizeStringArray(model.details?.capabilities),
+  ]
+  return capabilities.some((capability) => (
+    capability === 'image' ||
+    capability === 'images' ||
+    capability.includes('image')
+  ))
+}
+
+/**
+ * Lists all locally available Ollama models.
+ */
+export async function listModels(endpoint: string): Promise<string[]> {
+  const models = await listTagModels(endpoint)
+  return models
+    .map((model) => normalizeModelName(model))
+    .filter((name) => name.length > 0)
+}
+
+/**
+ * Lists locally installed models that explicitly advertise image capability.
+ * If explicit metadata is unavailable, this falls back to returning all local models
+ * so users can still choose a local model dynamically in Settings.
+ */
+export async function listImageModels(endpoint: string): Promise<string[]> {
+  const models = await listTagModels(endpoint)
+  if (models.length === 0) return []
+
+  const explicitImageModels = models
+    .filter((model) => hasExplicitImageCapability(model))
+    .map((model) => normalizeModelName(model))
+    .filter((name) => name.length > 0)
+
+  const source = explicitImageModels.length > 0
+    ? explicitImageModels
+    : models.map((model) => normalizeModelName(model)).filter((name) => name.length > 0)
+
+  return Array.from(new Set(source))
 }
 
 /**
