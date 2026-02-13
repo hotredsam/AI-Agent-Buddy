@@ -279,11 +279,11 @@ test.describe('Application Launch', () => {
         phase: 'done',
         plan: '1. long logs',
         steps: [],
-        logs: Array.from({ length: 120 }).map((_, idx) => ({
+        logs: Array.from({ length: 260 }).map((_, idx) => ({
           id: `l-${idx}`,
           timestamp: now,
           level: 'info',
-          message: `log-${idx}`.repeat(8),
+          message: `log-${idx} `.repeat(28),
         })),
         fileWrites: [],
         testRuns: [],
@@ -298,10 +298,17 @@ test.describe('Application Launch', () => {
     await window.locator('button[title="Code Editor"]').click();
     await expect(window.locator('.ai-pane-scroll')).toBeVisible();
 
+    await expect.poll(async () => {
+      return await window.evaluate(() => {
+        const scroller = document.querySelector('.ai-pane-scroll') as HTMLDivElement | null;
+        if (!scroller) return 0;
+        return scroller.scrollHeight - scroller.clientHeight;
+      });
+    }).toBeGreaterThan(16);
+
     const scrolled = await window.evaluate(() => {
       const scroller = document.querySelector('.ai-pane-scroll') as HTMLDivElement | null;
       if (!scroller) return false;
-      if (scroller.scrollHeight <= scroller.clientHeight) return false;
       scroller.scrollTop = scroller.scrollHeight;
       return scroller.scrollTop > 0;
     });
