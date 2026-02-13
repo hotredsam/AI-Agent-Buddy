@@ -98,6 +98,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
+  // --- Agent Orchestration ---
+  createAgentTask: (goal: string) => ipcRenderer.invoke('agent:createTask', goal),
+  listAgentTasks: () => ipcRenderer.invoke('agent:listTasks'),
+  getAgentTask: (id: string) => ipcRenderer.invoke('agent:getTask', id),
+  approveAgentTask: (id: string) => ipcRenderer.invoke('agent:approveTask', id),
+  onAgentUpdate: (callback: (tasks: any[]) => void) => {
+    const handler = (_event: any, tasks: any[]) => callback(tasks)
+    ipcRenderer.on('agent:update', handler)
+    return () => ipcRenderer.removeListener('agent:update', handler)
+  },
+
   // --- Terminal (PTY) ---
   terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('terminal:spawn', options),

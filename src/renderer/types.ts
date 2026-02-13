@@ -49,6 +49,7 @@ export interface UserFile {
   size: number
   modifiedAt: string
   type: string
+  isDirectory: boolean
 }
 
 export interface UserFileInfo extends UserFile {
@@ -61,6 +62,23 @@ export interface WorkspaceEntry {
   isDirectory: boolean
   size: number
   modifiedAt: string
+}
+
+export interface AgentStep {
+  id: string
+  description: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  result?: string
+}
+
+export interface AgentTask {
+  id: string
+  goal: string
+  status: 'planning' | 'waiting_approval' | 'approved' | 'running' | 'completed' | 'failed'
+  plan: string
+  steps: AgentStep[]
+  createdAt: string
+  currentStepIndex: number
 }
 
 // ---- Electron Bridge ----
@@ -113,6 +131,13 @@ export interface ElectronAPI {
   createWorkspaceFolder: (parentPath: string, folderName: string) => Promise<boolean>
   renameWorkspacePath: (targetPath: string, nextName: string) => Promise<string | null>
   deleteWorkspacePath: (targetPath: string) => Promise<boolean>
+  
+  createAgentTask: (goal: string) => Promise<AgentTask>
+  listAgentTasks: () => Promise<AgentTask[]>
+  getAgentTask: (id: string) => Promise<AgentTask | undefined>
+  approveAgentTask: (id: string) => Promise<AgentTask>
+  onAgentUpdate: (callback: (tasks: AgentTask[]) => void) => () => void
+
   getSystemStats: () => Promise<{ freeMem: number; totalMem: number; platform: string; cpus: number }>
   windowMinimize: () => Promise<void>
   windowMaximize: () => Promise<void>

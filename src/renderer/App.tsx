@@ -350,6 +350,13 @@ export default function App() {
     setView('code')
   }, [])
 
+  const handleOpenProject = useCallback((projectPath: string) => {
+    setWorkspaceRootPath(projectPath)
+    setShowExplorer(true)
+    setRecentWorkspacePaths((prev) => [projectPath, ...prev.filter((p) => p !== projectPath)].slice(0, 10))
+    setView('code')
+  }, [])
+
   const handleEditorContentChange = useCallback((content: string) => {
     if (!activeTabId) return
     setEditorTabs((prev) => prev.map((tab) => (tab.id === activeTabId ? { ...tab, content } : tab)))
@@ -431,60 +438,75 @@ export default function App() {
     model: string,
     mode: 'coding' | 'plan' | 'build' | 'bugfix'
   ) => {
-    setCodeAIBusy(true)
-    setCodeAIStatus('Sending request...')
-    const context = activeTab?.content || ''
-    try {
-      const timeout = new Promise<{ text: null; error: string }>((resolve) => {
-        setTimeout(() => resolve({ text: null, error: 'Request timed out. Try a smaller model or shorter prompt.' }), 90000)
-      })
-      setCodeAIStatus('Generating response...')
-      const result = await Promise.race([
-        window.electronAPI.generateCode({
-          prompt: promptText,
-          context,
-          provider,
-          model,
-          mode,
-        }),
-        timeout,
-      ])
-      if (!result.text) {
-        addToast(result.error || 'AI code generation failed.')
-        setCodeAIStatus(result.error || 'Generation failed')
-        return
-      }
-
-      const extracted = (() => {
-        const match = result.text!.match(/```[\w-]*\n([\s\S]*?)```/)
-        return (match ? match[1] : result.text!).trim()
-      })()
-
-      if (mode === 'plan') {
-        const planTab: EditorTab = {
-          id: `plan-${Date.now()}`,
-          filePath: null,
-          name: 'PLAN.md',
-          content: result.text || '',
-          language: 'Markdown',
-          savedContent: '',
+    if (mode === 'coding') {
+      // Direct code generation (original behavior)
+      setCodeAIBusy(true)
+      setCodeAIStatus('Sending request...')
+      const context = activeTab?.content || ''
+      try {
+        const timeout = new Promise<{ text: null; error: string }>((resolve) => {
+          setTimeout(() => resolve({ text: null, error: 'Request timed out. Try a smaller model or shorter prompt.' }), 90000)
+        })
+        setCodeAIStatus('Generating response...')
+        const result = await Promise.race([
+          window.electronAPI.generateCode({
+            prompt: promptText,
+            context,
+            provider,
+            model,
+            mode,
+          }),
+          timeout,
+        ])
+        if (!result.text) {
+          addToast(result.error || 'AI code generation failed.')
+          setCodeAIStatus(result.error || 'Generation failed')
+          return
         }
-        setEditorTabs((prev) => [...prev, planTab])
-        setActiveTabId(planTab.id)
-      } else if (activeTabId) {
-        setEditorTabs((prev) => prev.map((tab) => (
-          tab.id === activeTabId ? { ...tab, content: extracted } : tab
-        )))
-      } else {
-        const tab = createUntitledTab(extracted)
-        setEditorTabs((prev) => [...prev, tab])
-        setActiveTabId(tab.id)
+
+        const extracted = (() => {
+          const match = result.text!.match(/```[\w-]*\n([\s\S]*?)```/)
+          return (match ? match[1] : result.text!).trim()
+        })()
+
+        if (activeTabId) {
+          setEditorTabs((prev) => prev.map((tab) => (
+            tab.id === activeTabId ? { ...tab, content: extracted } : tab
+          )))
+        } else {
+          const tab = createUntitledTab(extracted)
+          setEditorTabs((prev) => [...prev, tab])
+          setActiveTabId(tab.id)
+        }
+        setCodeAIStatus('Applied to editor')
+        addToast('Applied AI output to editor.', 'success')
+      } finally {
+        setCodeAIBusy(false)
+        setTimeout(() => setCodeAIStatus(''), 2500)
       }
-      setCodeAIStatus('Applied to editor')
-      addToast('Applied AI output to editor.', 'success')
-    } finally {
-      setCodeAIBusy(false)
-      setTimeout(() => setCodeAIStatus(''), 2500)
+    } else {
+      // Agent Orchestration (Plan/Build/Bugfix)
+      try {
+        setCodeAIBusy(true)
+        setCodeAIStatus('Starting agent task...')
+        await window.electronAPI.createAgentTask(promptText) // Mode is handled by the agent based on context/prompt, or we can pass mode later
+        // Actually agent-runner currently treats everything as a "goal".
+        // We should ideally pass the mode to createAgentTask if we want specialized behavior from the start.
+        // For now, the prompt text drives the "Goal".
+        
+        addToast('Agent task started. Switching to Agents view...', 'success')
+        setView('workspace')
+        // We could also auto-select the 'agents' tab in WorkspacePane if we exposed that state, 
+        // but for now the user will see the Agents tab.
+        // To ensure the "Agents" tab is active, we might need to pass a prop or state to WorkspacePane.
+        // But WorkspacePane manages its own activeTab state. 
+        // Ideally App.tsx should control activeWorkspaceTab if we want to deep link.
+      } catch (err: any) {
+        addToast('Failed to start agent: ' + err.message)
+      } finally {
+        setCodeAIBusy(false)
+        setCodeAIStatus('')
+      }
     }
   }, [activeTab, activeTabId, addToast])
 
@@ -752,6 +774,7 @@ export default function App() {
           {view === 'workspace' && (
             <WorkspacePane
               onOpenInEditor={handleOpenInEditor}
+              onOpenProject={handleOpenProject}
               onNotify={addToast}
               onDownloaded={addDownload}
             />

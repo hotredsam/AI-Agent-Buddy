@@ -26,14 +26,15 @@ function createWindow(): void {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    backgroundColor: '#0c0c14',
+    backgroundColor: '#000c0c14', // Hex with alpha, though Electron might ignore alpha in backgroundColor if transparent: true is set
     show: false,
     frame: false,
+    transparent: true, // Enable transparency
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // Set to false to ensure preload initialization doesn't hit sandbox restrictions
+      sandbox: false,
     },
   })
 

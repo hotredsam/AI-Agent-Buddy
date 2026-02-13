@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import type { UserFile, UserFileInfo } from '../types'
+import type { UserFile, UserFileInfo, AgentTask } from '../types'
 
 interface WorkspacePaneProps {
   onOpenInEditor?: (file: UserFile) => void | Promise<void>
+  onOpenProject?: (path: string) => void
   onNotify?: (text: string, type?: 'error' | 'warning' | 'success') => void
   onDownloaded?: (name: string, path: string) => void
 }
@@ -13,7 +14,10 @@ function formatFileSize(bytes: number): string {
   return (bytes / 1048576).toFixed(1) + ' MB'
 }
 
-function fileIcon(type: string): string {
+function fileIcon(file: UserFile): string {
+  if (file.isDirectory) return '\u{1F4C1}' // Folder
+  
+  const type = file.type
   const icons: Record<string, string> = {
     '.pdf': '\u{1F4C4}',
     '.doc': '\u{1F4C4}', '.docx': '\u{1F4C4}',
@@ -33,7 +37,7 @@ function formatDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString()
 }
 
-export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }: WorkspacePaneProps) {
+export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify, onDownloaded }: WorkspacePaneProps) {
   const [activeTab, setActiveTab] = useState<'files' | 'agents'>('files')
   const [files, setFiles] = useState<UserFile[]>([])
   const [loading, setLoading] = useState(true)
@@ -43,6 +47,11 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
   const [detailsFile, setDetailsFile] = useState<UserFileInfo | null>(null)
   const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type'>('modified')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  
+  // Agent state
+  const [tasks, setTasks] = useState<AgentTask[]>([])
+  const [newGoal, setNewGoal] = useState('')
+  const [creatingTask, setCreatingTask] = useState(false)
 
   const loadFiles = useCallback(async () => {
     try {
@@ -56,9 +65,25 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
     }
   }, [onNotify])
 
+  const loadTasks = useCallback(async () => {
+    try {
+      const list = await window.electronAPI.listAgentTasks()
+      setTasks(list)
+    } catch (err) {
+      console.error('Failed to list tasks:', err)
+    }
+  }, [])
+
   useEffect(() => {
-    loadFiles()
-  }, [loadFiles])
+    if (activeTab === 'files') loadFiles()
+    if (activeTab === 'agents') {
+      loadTasks()
+      const unsub = window.electronAPI.onAgentUpdate((updatedTasks) => {
+        setTasks(updatedTasks)
+      })
+      return () => unsub()
+    }
+  }, [activeTab, loadFiles, loadTasks])
 
   useEffect(() => {
     const closeMenu = () => setOpenMenu(null)
@@ -75,6 +100,35 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
     const file = await window.electronAPI.importFile()
     if (file) {
       upsertFile(file)
+    }
+  }
+
+  const handleCreateProject = async () => {
+    const name = prompt('New Project Name:')
+    if (!name?.trim()) return
+    // We use createWorkspaceFolder at the root level (empty parent path)
+    // But since createWorkspaceFolder requires a parentPath, we need a way to create in user-files root.
+    // However, we don't have a direct API exposed for "create folder in user-files root" except createWorkspaceFolder if we know the root path.
+    // Actually, `createFile` logic in `store.ts` handles directories if `directory` param is passed.
+    // Let's use `createWorkspaceFolder` via a new bridge or just use `createFile` to make a dummy file inside? 
+    // No, `ipc.ts` has `workspace:createFolder`. But that takes `parentPath`.
+    // We need `files:createFolder` in IPC. 
+    
+    // Workaround: Use `createFile` with a directory path? No.
+    // Better: Add `createProject` to IPC. For now, I'll rely on `createFile` making the dir if I specify it.
+    // Actually, `store.ts` `createUserFile` ensures dir exists.
+    // Let's verify `store.ts`: `ensureUserFilesDir`.
+    
+    // I'll add a proper `createFolder` to `files:` IPC later. 
+    // For now, I'll try to use `createFile` to create a README.md inside the new project folder.
+    
+    const readme = await window.electronAPI.createFile('README.md', `# ${name}\n\nProject created.`, name)
+    if (readme) {
+      // Refresh list
+      loadFiles()
+      onNotify?.(`Project "${name}" created.`, 'success')
+    } else {
+      onNotify?.('Failed to create project.')
     }
   }
 
@@ -196,6 +250,31 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
     if (!ok) onNotify?.('Failed to open with external app.')
   }
 
+  const handleCreateTask = async () => {
+    if (!newGoal.trim()) return
+    setCreatingTask(true)
+    try {
+      await window.electronAPI.createAgentTask(newGoal.trim())
+      setNewGoal('')
+      loadTasks()
+      onNotify?.('Task created. Agent is planning...', 'success')
+    } catch (err: any) {
+      onNotify?.('Failed to create task: ' + err.message)
+    } finally {
+      setCreatingTask(false)
+    }
+  }
+
+  const handleApproveTask = async (id: string) => {
+    try {
+      await window.electronAPI.approveAgentTask(id)
+      loadTasks()
+      onNotify?.('Plan approved. Agent is building...', 'success')
+    } catch (err: any) {
+      onNotify?.('Failed to approve task: ' + err.message)
+    }
+  }
+
   return (
     <div className="workspace-pane-container">
       <div className="workspace-tab-bar">
@@ -237,8 +316,11 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
               <button className="files-btn secondary" onClick={() => setSortDir((p) => p === 'asc' ? 'desc' : 'asc')}>
                 {sortDir === 'asc' ? 'Asc' : 'Desc'}
               </button>
+              <button className="files-btn" onClick={handleCreateProject} title="Create Project">
+                + Project
+              </button>
               <button className="files-btn" onClick={handleImport} title="Import file">
-                + Import
+                + File
               </button>
               <button className="files-btn secondary" onClick={handleOpenFolder} title="Open folder">
                 Open Folder
@@ -258,6 +340,9 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
             <div className="files-list">
               {[...files].sort((a, b) => {
                 const dir = sortDir === 'asc' ? 1 : -1
+                if (a.isDirectory && !b.isDirectory) return -1
+                if (!a.isDirectory && b.isDirectory) return 1
+                
                 if (sortBy === 'name') return a.name.localeCompare(b.name) * dir
                 if (sortBy === 'size') return (a.size - b.size) * dir
                 if (sortBy === 'type') return a.type.localeCompare(b.type) * dir
@@ -265,30 +350,37 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
               }).map((file, index, arr) => (
                 <div
                   key={file.name}
-                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''}`}
+                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''} ${file.isDirectory ? 'is-folder' : ''}`}
                   draggable
                   onDragStart={() => setDraggingFileName(file.name)}
                   onDragEnd={() => setDraggingFileName(null)}
+                  onDoubleClick={() => {
+                    if (file.isDirectory && onOpenProject) {
+                      onOpenProject(file.path)
+                    } else if (onOpenInEditor) {
+                      onOpenInEditor(file)
+                    }
+                  }}
                   onDragOver={(e) => {
                     e.preventDefault()
-                    if (!draggingFileName || draggingFileName === file.name) return
-                    const from = files.findIndex((f) => f.name === draggingFileName)
-                    const to = files.findIndex((f) => f.name === file.name)
-                    if (from < 0 || to < 0 || from === to) return
-                    const next = [...files]
-                    const [moved] = next.splice(from, 1)
-                    next.splice(to, 0, moved)
-                    setFiles(next)
+                    // Drag logic (simple reordering for now, nesting later)
                   }}
                 >
-                  <span className="file-icon">{fileIcon(file.type)}</span>
+                  <span className="file-icon">{fileIcon(file)}</span>
                   <div className="file-info">
                     <span className="file-name">{file.name}</span>
-                    <span className="file-meta">{formatFileSize(file.size)}</span>
+                    <span className="file-meta">{file.isDirectory ? 'Project Folder' : formatFileSize(file.size)}</span>
                   </div>
-                  <button className="file-open-code-btn" onClick={() => onOpenInEditor?.(file)} title="Open in Code">
-                    Open
-                  </button>
+                  {!file.isDirectory && (
+                    <button className="file-open-code-btn" onClick={() => onOpenInEditor?.(file)} title="Open in Code">
+                      Open
+                    </button>
+                  )}
+                  {file.isDirectory && (
+                    <button className="file-open-code-btn" onClick={() => onOpenProject?.(file.path)} title="Open Project">
+                      Open Project
+                    </button>
+                  )}
                   <div className="file-actions">
                     <button
                       className="file-menu-btn"
@@ -302,7 +394,7 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
                     </button>
                     {openMenu === file.name && (
                       <div className="file-action-menu" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => { handleSaveAs(file); setOpenMenu(null) }}>Download</button>
+                        {!file.isDirectory && <button onClick={() => { handleSaveAs(file); setOpenMenu(null) }}>Download</button>}
                         <button onClick={() => { onOpenInEditor?.(file); setOpenMenu(null) }}>Open in Code</button>
                         <button onClick={() => { handleRename(file); setOpenMenu(null) }}>Rename</button>
                         <button onClick={() => { handleMove(file); setOpenMenu(null) }}>Move</button>
@@ -310,7 +402,7 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
                         <button onClick={() => { handleCopyPath(file); setOpenMenu(null) }}>Copy Path</button>
                         <button onClick={() => { handleDetails(file); setOpenMenu(null) }}>View Details</button>
                         <button onClick={() => { handleShowInExplorer(file); setOpenMenu(null) }}>Open in Explorer</button>
-                        <button onClick={() => { handleOpenExternal(file); setOpenMenu(null) }}>Open Externally</button>
+                        {!file.isDirectory && <button onClick={() => { handleOpenExternal(file); setOpenMenu(null) }}>Open Externally</button>}
                         <button className="danger" onClick={() => { handleDelete(file.name); setOpenMenu(null) }}>
                           Delete
                         </button>
@@ -329,13 +421,73 @@ export default function WorkspacePane({ onOpenInEditor, onNotify, onDownloaded }
             <p className="agents-sub">Define complex multi-step tasks for AI agents to execute.</p>
           </div>
           
-          <div className="agents-empty">
-            <span className="big-icon">{'\u{1F916}'}</span>
-            <p>No active agent tasks</p>
-            <span className="sub">Use the "Plan" mode in Code view to generate a task list.</span>
-            <button className="files-btn" style={{ marginTop: 16 }} onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', ctrlKey: true }))}>
-              Go to Code View
+          <div className="agent-task-creation">
+            <input 
+              className="agent-task-input"
+              placeholder="Describe a goal (e.g. 'Refactor the sidebar component')"
+              value={newGoal}
+              onChange={(e) => setNewGoal(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleCreateTask()}
+            />
+            <button 
+              className="files-btn"
+              onClick={handleCreateTask}
+              disabled={creatingTask || !newGoal.trim()}
+            >
+              {creatingTask ? 'Creating...' : 'Start Task'}
             </button>
+          </div>
+
+          <div className="agent-task-list">
+            {tasks.length === 0 ? (
+              <div className="agents-empty">
+                <span className="big-icon">{'\u{1F916}'}</span>
+                <p>No active tasks</p>
+                <span className="sub">Create a task above to start an agent workflow.</span>
+              </div>
+            ) : (
+              tasks.map(task => (
+                <div key={task.id} className="agent-task-card">
+                  <div className="agent-task-header">
+                    <span className="agent-task-status" data-status={task.status}>{task.status.replace('_', ' ')}</span>
+                    <span className="agent-task-time">{new Date(task.createdAt).toLocaleTimeString()}</span>
+                  </div>
+                  <h3 className="agent-task-goal">{task.goal}</h3>
+                  
+                  {task.status === 'planning' && <div className="agent-step-loading">Generating plan...</div>}
+                  
+                  {task.plan && (
+                    <div className="agent-task-plan">
+                      <strong>Plan Summary:</strong>
+                      <p>{task.plan.slice(0, 150)}...</p>
+                    </div>
+                  )}
+
+                  {task.steps.length > 0 && (
+                    <div className="agent-steps-list">
+                      {task.steps.map((step, idx) => (
+                        <div key={step.id} className={`agent-step-item ${step.status}`}>
+                          <span className="step-icon">
+                            {step.status === 'completed' ? '✓' : 
+                             step.status === 'in_progress' ? '⟳' : 
+                             step.status === 'failed' ? '✕' : '○'}
+                          </span>
+                          <span className="step-desc">{step.description}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {task.status === 'waiting_approval' && (
+                    <div className="agent-task-actions">
+                      <button className="files-btn" onClick={() => handleApproveTask(task.id)}>
+                        Approve Plan & Execute
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}

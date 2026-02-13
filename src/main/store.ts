@@ -291,6 +291,7 @@ export interface UserFile {
   size: number
   modifiedAt: string
   type: string
+  isDirectory: boolean
 }
 
 export interface UserFileInfo extends UserFile {
@@ -305,7 +306,8 @@ function mapStatsToUserFile(filePath: string): UserFile {
     path: filePath,
     size: stats.size,
     modifiedAt: stats.mtime.toISOString(),
-    type: path.extname(name).toLowerCase() || 'unknown',
+    type: stats.isDirectory() ? 'folder' : (path.extname(name).toLowerCase() || 'unknown'),
+    isDirectory: stats.isDirectory(),
   }
 }
 
@@ -330,12 +332,16 @@ export function listUserFiles(): UserFile[] {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true })
     return entries
-      .filter(e => e.isFile())
       .map(e => {
         const fullPath = path.join(dir, e.name)
         return mapStatsToUserFile(fullPath)
       })
-      .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime())
+      .sort((a, b) => {
+        // Folders first, then files
+        if (a.isDirectory && !b.isDirectory) return -1
+        if (!a.isDirectory && b.isDirectory) return 1
+        return new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+      })
   } catch {
     return []
   }

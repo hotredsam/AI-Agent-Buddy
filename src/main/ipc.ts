@@ -5,6 +5,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as pty from 'node-pty'
 import * as store from './store'
+import * as agent from './agent-runner'
 import { sendMessageStream, checkHealth, listModels, runDiagnostics, pullModel, OllamaChatMessage, StreamMeta } from './ollama'
 import { sendOpenAIStream } from './openai'
 import { sendAnthropicStream } from './anthropic'
@@ -814,6 +815,24 @@ export function registerIpcHandlers(): void {
     ].join('\n')
 
     return prompt
+  })
+
+  // --- Agent Handlers ---
+
+  ipcMain.handle('agent:createTask', async (_event, goal: string) => {
+    return agent.createAgentTask(goal)
+  })
+
+  ipcMain.handle('agent:listTasks', async () => {
+    return agent.listAgentTasks()
+  })
+
+  ipcMain.handle('agent:getTask', async (_event, id: string) => {
+    return agent.getAgentTask(id)
+  })
+
+  ipcMain.handle('agent:approveTask', async (_event, id: string) => {
+    return agent.approveAgentTask(id)
   })
 
   // --- Terminal PTY Handlers ---
