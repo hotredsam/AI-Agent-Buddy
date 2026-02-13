@@ -10,7 +10,11 @@ let mainWindow: BrowserWindow | null = null
 const isDev = process.env.NODE_ENV === 'development'
 
 function createWindow(): void {
-  const preloadPath = path.resolve(__dirname, '..', 'preload', 'index.js')
+  // More robust path resolution for both dev and prod
+  const preloadPath = isDev 
+    ? path.join(app.getAppPath(), 'dist', 'preload', 'index.js')
+    : path.join(__dirname, '..', 'preload', 'index.js')
+    
   console.log('[Main] Preload path:', preloadPath)
   
   if (!fs.existsSync(preloadPath)) {
@@ -29,7 +33,7 @@ function createWindow(): void {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false, // Set to false to ensure preload initialization doesn't hit sandbox restrictions
     },
   })
 
