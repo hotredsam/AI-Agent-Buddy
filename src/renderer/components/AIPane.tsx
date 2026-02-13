@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AgentEvent,
   AgentMode,
@@ -13,6 +13,7 @@ interface AIPaneProps {
   settings: Settings
   modelOptions?: string[]
   workspaceRootPath: string | null
+  onWorkspaceRootPathChange?: (path: string) => void
   activeFileContent: string
   onSaveSettings: (next: Settings) => void
   onApplyToEditor: (content: string) => void
@@ -69,6 +70,7 @@ export default function AIPane({
   settings,
   modelOptions = [],
   workspaceRootPath,
+  onWorkspaceRootPathChange,
   activeFileContent,
   onSaveSettings,
   onApplyToEditor,
@@ -85,9 +87,17 @@ export default function AIPane({
   const [codingResponses, setCodingResponses] = useState<CodingResponse[]>([])
   const [expandedReasoningIds, setExpandedReasoningIds] = useState<Record<string, boolean>>({})
   const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnostics | null>(null)
+  const paneRef = useRef<HTMLElement | null>(null)
 
   const provider = (settings.codingProvider || settings.activeProvider || 'ollama') as NonNullable<Settings['activeProvider']>
   const model = settings.codingModel || settings.modelName
+
+  const refreshLayout = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('resize'))
+      window.setTimeout(() => window.dispatchEvent(new Event('resize')), 120)
+    })
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -149,6 +159,26 @@ export default function AIPane({
       unsubRuntime()
     }
   }, [])
+
+  useEffect(() => {
+    refreshLayout()
+  }, [collapsed, refreshLayout])
+
+  useEffect(() => {
+    const unsub = window.electronAPI.onWindowStateChanged(() => {
+      refreshLayout()
+    })
+    return () => unsub()
+  }, [refreshLayout])
+
+  useEffect(() => {
+    if (!paneRef.current || typeof ResizeObserver !== 'function') return
+    const observer = new ResizeObserver(() => {
+      refreshLayout()
+    })
+    observer.observe(paneRef.current)
+    return () => observer.disconnect()
+  }, [collapsed, refreshLayout])
 
   const activeTask = useMemo(() => {
     if (!activeTaskId) return null
@@ -239,14 +269,13 @@ export default function AIPane({
 
   const handleApprove = async () => {
     if (!activeTask || activeTask.status !== 'waiting_approval') return
-    if (!activeTask.workspaceRootPath) {
-      setPaneState('error')
-      onNotify?.('Open a project first.', 'warning')
-      return
-    }
     try {
       setPaneState('writing')
-      await window.electronAPI.approveAgentTask(activeTask.id)
+      const approvedTask = await window.electronAPI.approveAgentTask(activeTask.id, workspaceRootPath || null)
+      if (approvedTask.workspaceRootPath && approvedTask.workspaceRootPath !== workspaceRootPath) {
+        onWorkspaceRootPathChange?.(approvedTask.workspaceRootPath)
+        onNotify?.(`Workspace ready: ${approvedTask.workspaceRootPath}`, 'success')
+      }
       onNotify?.('Plan approved. Starting build...', 'success')
     } catch (error: any) {
       setPaneState('error')
@@ -268,7 +297,12 @@ export default function AIPane({
 
   if (collapsed) {
     return (
-      <div className="ai-pane ai-pane-collapsed">
+      <div
+        className="ai-pane ai-pane-collapsed"
+        ref={(node) => {
+          paneRef.current = node
+        }}
+      >
         <button className="ai-pane-collapse-btn" onClick={() => setCollapsed(false)} title="Expand AI Pane">
           {'<'}
         </button>
@@ -277,7 +311,12 @@ export default function AIPane({
   }
 
   return (
-    <aside className="ai-pane">
+    <aside
+      className="ai-pane"
+      ref={(node) => {
+        paneRef.current = node
+      }}
+    >
       <div className="ai-pane-header">
         <div className="ai-pane-title-wrap">
           <h3>AI Assistant</h3>

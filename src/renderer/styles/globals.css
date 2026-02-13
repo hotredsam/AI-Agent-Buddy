@@ -1011,13 +1011,14 @@ body::before {
 .settings-field select {
   width: 100%;
   padding: 10px 14px;
-  background: var(--glass-input);
+  background: rgba(20, 22, 33, 0.95);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  color: var(--text-primary);
+  color: #f4f4f8;
   font-size: 14px;
   font-family: inherit;
   outline: none;
+  color-scheme: dark;
   transition: all var(--duration-fast) var(--ease-out);
 }
 .settings-field input:hover {
@@ -1040,6 +1041,10 @@ body::before {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-muted);
   background: var(--glass-input-hover);
+}
+.settings-field select option {
+  background: #161622;
+  color: #f4f4f8;
 }
 .settings-field input[type="number"] {
   -moz-appearance: textfield;
@@ -1335,6 +1340,162 @@ body::before {
   max-width: 300px;
 }
 
+.agent-task-creation {
+  margin-top: var(--space-md);
+  display: flex;
+  gap: var(--space-sm);
+  align-items: stretch;
+}
+
+.agent-task-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--glass-input);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.agent-task-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.agent-task-list {
+  margin-top: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.agent-task-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg-strong);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-task-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-task-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--glass-input);
+  color: var(--text-secondary);
+}
+
+.agent-task-status[data-status='waiting_approval'] {
+  color: var(--warning);
+  border: 1px solid rgba(255, 209, 102, 0.3);
+}
+
+.agent-task-status[data-status='running'],
+.agent-task-status[data-status='testing'] {
+  color: var(--accent);
+  border: 1px solid rgba(110, 170, 255, 0.35);
+}
+
+.agent-task-status[data-status='completed'] {
+  color: var(--success);
+  border: 1px solid rgba(99, 230, 190, 0.35);
+}
+
+.agent-task-status[data-status='failed'] {
+  color: var(--danger);
+  border: 1px solid rgba(255, 107, 122, 0.35);
+}
+
+.agent-task-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+.agent-task-goal {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.agent-step-loading {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.agent-task-plan {
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.12);
+  padding: 10px;
+}
+.agent-task-plan strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.agent-task-plan p {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.agent-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-step-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.agent-step-item .step-icon {
+  width: 16px;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.agent-step-item.in_progress .step-icon {
+  color: var(--accent);
+}
+.agent-step-item.completed .step-icon {
+  color: var(--success);
+}
+.agent-step-item.failed .step-icon {
+  color: var(--danger);
+}
+
+.agent-task-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ==================== TOAST ==================== */
 .toast-container {
   position: fixed;
@@ -1472,10 +1633,15 @@ body::before {
 .files-sort-select {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
-  background: var(--glass-input);
-  color: var(--text-secondary);
+  background: rgba(20, 22, 33, 0.95);
+  color: #f4f4f8;
   padding: 6px 10px;
   font-size: 12px;
+  color-scheme: dark;
+}
+.files-sort-select option {
+  background: #161622;
+  color: #f4f4f8;
 }
 
 .files-empty {
@@ -2477,6 +2643,7 @@ body::before {
 }
 
 .ai-pane {
+  flex: 0 0 360px;
   width: 360px;
   min-width: 300px;
   max-width: 460px;
@@ -2485,9 +2652,11 @@ body::before {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .ai-pane-collapsed {
+  flex: 0 0 28px;
   width: 28px;
   min-width: 28px;
   max-width: 28px;
@@ -3322,8 +3491,13 @@ body::before {
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-xs);
   background: rgba(20, 22, 33, 0.95);
-  color: var(--text-primary);
+  color: #f4f4f8;
   font-size: 11px;
+  color-scheme: dark;
+}
+.terminal-shell-select option {
+  background: #161622;
+  color: #f4f4f8;
 }
 
 .terminal-topbar-btn,

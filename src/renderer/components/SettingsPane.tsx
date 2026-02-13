@@ -22,11 +22,13 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   const [checkpointCopied, setCheckpointCopied] = useState(false)
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
   const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [availableImageModels, setAvailableImageModels] = useState<string[]>([])
   const [pullModelName, setPullModelName] = useState(settings.modelName || '')
   const [pullingModel, setPullingModel] = useState(false)
   const [imagePrompt, setImagePrompt] = useState('A clean product hero image of a futuristic coding desk setup')
   const [imageGenerating, setImageGenerating] = useState(false)
   const [imageResultPath, setImageResultPath] = useState<string | null>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
   const [diagResult, setDiagResult] = useState<{
     serverReachable: boolean
     availableModels: string[]
@@ -46,6 +48,15 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
       setAvailableModels(models)
     } catch {
       setAvailableModels([])
+    }
+  }, [])
+
+  const refreshImageModels = useCallback(async () => {
+    try {
+      const models = await window.electronAPI.listImageModels()
+      setAvailableImageModels(models)
+    } catch {
+      setAvailableImageModels([])
     }
   }, [])
 
@@ -72,13 +83,23 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   useEffect(() => {
     refreshConnection()
     refreshModels()
+    refreshImageModels()
     refreshSystemStats()
     const interval = setInterval(() => {
       refreshConnection()
       refreshSystemStats()
     }, 30000)
     return () => clearInterval(interval)
-  }, [refreshConnection, refreshModels, refreshSystemStats])
+  }, [refreshConnection, refreshModels, refreshImageModels, refreshSystemStats])
+
+  useEffect(() => {
+    if ((form.imageProvider || 'ollama') !== 'ollama') return
+    if ((form.imageModel || '').trim()) return
+    if (availableImageModels.length === 0) return
+    const updated = { ...form, imageModel: availableImageModels[0] }
+    setForm(updated)
+    onSave(updated)
+  }, [availableImageModels, form, onSave])
 
   const handleChange = (field: keyof Settings, value: string | number) => {
     const updated = { ...form, [field]: value }
@@ -157,14 +178,22 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
   const handleGenerateImage = async () => {
     setImageGenerating(true)
     setImageResultPath(null)
+    setImageError(null)
     try {
+      const provider = form.imageProvider || 'ollama'
+      const selectedModel = (form.imageModel || '').trim()
+      const model = provider === 'ollama'
+        ? (selectedModel || availableImageModels[0] || '')
+        : selectedModel
       const result = await window.electronAPI.generateImage({
         prompt: imagePrompt.trim(),
-        provider: form.imageProvider || 'openai',
-        model: form.imageModel || 'gpt-image-1',
+        provider,
+        model: model || undefined,
       })
       if (result.filePath) {
         setImageResultPath(result.filePath)
+      } else if (result.error) {
+        setImageError(result.error)
       }
     } finally {
       setImageGenerating(false)
@@ -418,9 +447,14 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
           <label htmlFor="image-provider">Image Provider</label>
           <select
             id="image-provider"
-            value={form.imageProvider || 'openai'}
+            value={form.imageProvider || 'ollama'}
             onChange={(e) => {
-              const updated = { ...form, imageProvider: e.target.value as any }
+              const provider = e.target.value as any
+              const currentModel = (form.imageModel || '').trim()
+              const fallbackModel = provider === 'ollama'
+                ? (availableImageModels.includes(currentModel) ? currentModel : (availableImageModels[0] || ''))
+                : currentModel
+              const updated = { ...form, imageProvider: provider, imageModel: fallbackModel }
               setForm(updated)
               onSave(updated)
             }}
@@ -432,20 +466,50 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
             <option value="groq">Groq</option>
           </select>
         </div>
-        <div className="settings-field">
-          <label htmlFor="image-model">Image Model</label>
-          <input
-            id="image-model"
-            type="text"
-            value={form.imageModel || 'gpt-image-1'}
-            onChange={(e) => {
-              const updated = { ...form, imageModel: e.target.value }
-              setForm(updated)
-            }}
-            onBlur={() => onSave(form)}
-            placeholder="gpt-image-1"
-          />
-        </div>
+        {(form.imageProvider || 'ollama') === 'ollama' ? (
+          <div className="settings-field">
+            <label htmlFor="image-model">Local Image Model</label>
+            <select
+              id="image-model"
+              value={form.imageModel || ''}
+              onChange={(e) => {
+                const updated = { ...form, imageModel: e.target.value }
+                setForm(updated)
+                onSave(updated)
+              }}
+            >
+              {availableImageModels.length === 0 && (
+                <option value="">No local image models detected</option>
+              )}
+              {availableImageModels.map((model) => (
+                <option key={model} value={model}>{model}</option>
+              ))}
+            </select>
+            <span className="settings-field-hint">
+              Install a local image model with: <code>ollama pull &lt;model&gt;</code>
+            </span>
+            <div className="settings-actions" style={{ marginTop: 8 }}>
+              <button className="settings-btn secondary" onClick={refreshImageModels} type="button">
+                Refresh Local Image Models
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="settings-field">
+            <label htmlFor="image-model">Image Model</label>
+            <input
+              id="image-model"
+              type="text"
+              value={form.imageModel || ''}
+              onChange={(e) => {
+                const updated = { ...form, imageModel: e.target.value }
+                setForm(updated)
+              }}
+              onBlur={() => onSave(form)}
+              placeholder="Provider-specific image model"
+            />
+          </div>
+        )}
         <div className="settings-field">
           <label htmlFor="image-prompt">Test Prompt</label>
           <input
@@ -463,6 +527,11 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
           {imageResultPath && (
             <span className="settings-field-hint" style={{ marginLeft: 12 }}>
               Saved to: {imageResultPath}
+            </span>
+          )}
+          {imageError && (
+            <span className="settings-field-hint" style={{ marginLeft: 12, color: 'var(--danger)' }}>
+              {imageError}
             </span>
           )}
         </div>

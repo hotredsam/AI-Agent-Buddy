@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
   modelName: 'glm-4.7-flash',
   codingModel: 'glm-4.7-flash',
-  imageModel: 'gpt-image-1',
+  imageModel: '',
   numCtx: 8192,
   theme: 'glass',
   permissions: {
@@ -30,7 +30,7 @@ const DEFAULT_SETTINGS: Settings = {
   },
   activeProvider: 'ollama',
   codingProvider: 'ollama',
-  imageProvider: 'openai',
+  imageProvider: 'ollama',
   systemPrompts: {
     chat: 'You are a helpful AI assistant. Provide clear and direct answers.',
     coding: 'You are a senior software engineer. Return practical, correct code with minimal fluff.',
@@ -352,15 +352,17 @@ export default function App() {
     setWorkspaceRootPath(picked)
     setShowExplorer(true)
     setRecentWorkspacePaths((prev) => [picked, ...prev.filter((p) => p !== picked)].slice(0, 10))
+    addToast(`Workspace opened: ${picked}`, 'success')
     setView('code')
-  }, [])
+  }, [addToast])
 
   const handleOpenProject = useCallback((projectPath: string) => {
     setWorkspaceRootPath(projectPath)
     setShowExplorer(true)
     setRecentWorkspacePaths((prev) => [projectPath, ...prev.filter((p) => p !== projectPath)].slice(0, 10))
+    addToast(`Workspace opened: ${projectPath}`, 'success')
     setView('code')
-  }, [])
+  }, [addToast])
 
   const handleEditorContentChange = useCallback((content: string) => {
     if (!activeTabId) return
@@ -796,6 +798,7 @@ export default function App() {
                   settings={settings}
                   modelOptions={codingModelOptions}
                   workspaceRootPath={workspaceRootPath}
+                  onWorkspaceRootPathChange={setWorkspaceRootPath}
                   activeFileContent={activeTab?.content || ''}
                   onSaveSettings={handleSaveSettings}
                   onApplyToEditor={handleApplyAIToEditor}

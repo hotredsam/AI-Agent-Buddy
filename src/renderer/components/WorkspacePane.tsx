@@ -109,11 +109,17 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   }
 
   const handleCreateProject = async () => {
-    const name = prompt('New Project Name:')
-    if (!name?.trim()) return
+    onNotify?.('Project creation started...', 'warning')
+    const suggested = `Project-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`
+    const name = prompt('New Project Name:', suggested)
+    if (!name?.trim()) {
+      onNotify?.('Project creation cancelled.', 'warning')
+      return
+    }
     try {
       const trimmedName = name.trim()
       console.info('[WorkspacePane] + Project click fired for:', trimmedName)
+      onNotify?.(`Creating project "${trimmedName}"...`, 'warning')
       const before = await window.electronAPI.listFiles()
       const project = await window.electronAPI.createProject(trimmedName)
       if (project) {
@@ -124,14 +130,14 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
           existsAfter: after.some((f) => f.name === trimmedName && f.isDirectory),
         })
         await loadFiles()
-        onNotify?.(`Project "${name}" created.`, 'success')
+        onNotify?.(`Project "${name}" created at ${project.path}`, 'success')
       } else {
         const exists = before.some((f) => f.name === trimmedName && f.isDirectory)
         onNotify?.(exists ? `Project "${trimmedName}" already exists.` : `Failed to create project "${trimmedName}".`)
       }
     } catch (error: any) {
       console.error('[WorkspacePane] createProject failed:', error)
-      onNotify?.('Failed to create project: ' + (error?.message || 'Unknown error'))
+      onNotify?.(`Failed to create project "${name.trim()}": ${error?.message || 'Unknown error'}`)
     }
   }
 
@@ -525,9 +531,9 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                       {task.steps.map((step, idx) => (
                         <div key={step.id} className={`agent-step-item ${step.status}`}>
                           <span className="step-icon">
-                            {step.status === 'completed' ? '✓' : 
-                             step.status === 'in_progress' ? '⟳' : 
-                             step.status === 'failed' ? '✕' : '○'}
+                            {step.status === 'completed' ? '\u2713' :
+                             step.status === 'in_progress' ? '\u29D7' :
+                             step.status === 'failed' ? '\u2715' : '\u25CB'}
                           </span>
                           <span className="step-desc">{step.description}</span>
                         </div>
@@ -566,4 +572,5 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
     </div>
   )
 }
+
 
