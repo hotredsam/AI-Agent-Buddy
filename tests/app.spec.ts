@@ -1,5 +1,15 @@
 import { _electron as electron, test, expect } from '@playwright/test';
 import * as path from 'path';
+import * as fs from 'fs';
+
+async function captureScreenshot(window: any, fileName: string) {
+  const outDir = path.join(__dirname, '..', 'test-results', 'screenshots');
+  fs.mkdirSync(outDir, { recursive: true });
+  await window.screenshot({
+    path: path.join(outDir, fileName),
+    fullPage: false,
+  });
+}
 
 test.describe('Application Launch', () => {
   let app: any;
@@ -298,6 +308,29 @@ test.describe('Application Launch', () => {
     expect(scrolled).toBeTruthy();
   });
 
+  test('ai pane restores width after collapse and reopen', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+    const initialWidth = await window.evaluate(() => {
+      const pane = document.querySelector('.ai-pane') as HTMLElement | null;
+      return pane?.getBoundingClientRect().width || 0;
+    });
+    expect(initialWidth).toBeGreaterThan(250);
+
+    await window.locator('.ai-pane .ai-pane-collapse-btn').click();
+    await expect(window.locator('.ai-pane.ai-pane-collapsed')).toBeVisible();
+    await window.locator('.ai-pane.ai-pane-collapsed .ai-pane-collapse-btn').click();
+
+    await expect.poll(async () => {
+      return await window.evaluate(() => {
+        const pane = document.querySelector('.ai-pane') as HTMLElement | null;
+        return pane?.getBoundingClientRect().width || 0;
+      });
+    }).toBeGreaterThan(250);
+  });
+
   test('build mode is blocked when no workspace is open', async () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
@@ -324,6 +357,116 @@ test.describe('Application Launch', () => {
     await expect(window.locator('h2')).toContainText('Agent Orchestration');
   });
 
+  test('approve plan auto-creates workspace when none is open', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.evaluate(async () => {
+      const now = new Date().toISOString();
+      await window.electronAPI.testClearAgentTasks();
+      await window.electronAPI.testCreateAgentTaskFixture({
+        id: 'auto-workspace-task',
+        goal: 'Create a sample app automatically',
+        mode: 'plan',
+        status: 'waiting_approval',
+        phase: 'done',
+        plan: '1. Create project and continue',
+        steps: [
+          { id: 's1', description: 'Create README', status: 'pending' },
+        ],
+        logs: [],
+        fileWrites: [],
+        testRuns: [],
+        createdAt: now,
+        currentStepIndex: 0,
+        workspaceRootPath: null,
+        autoRunPipeline: false,
+        cancelRequested: false,
+      });
+    });
+
+    await window.locator('button[title="Code Editor"]').click();
+    await window.locator('button:has-text("Approve Plan")').click();
+
+    await expect.poll(async () => {
+      return await window.evaluate(async () => {
+        const tasks = await window.electronAPI.listAgentTasks();
+        const task = tasks.find((item) => item.id === 'auto-workspace-task');
+        return task?.workspaceRootPath || '';
+      });
+    }).toContain('projects');
+
+    const workspacePath = await window.evaluate(async () => {
+      const tasks = await window.electronAPI.listAgentTasks();
+      const task = tasks.find((item) => item.id === 'auto-workspace-task');
+      return task?.workspaceRootPath || '';
+    });
+    expect(/user-files[\\/]+projects/i.test(workspacePath)).toBeTruthy();
+
+    const scaffoldText = await window.evaluate(async () => {
+      const tasks = await window.electronAPI.listAgentTasks();
+      const task = tasks.find((item) => item.id === 'auto-workspace-task');
+      const root = task?.workspaceRootPath || '';
+      if (!root) return null;
+      const forwardPath = `${root.replace(/[\\/]$/, '')}/PROJECT.md`;
+      const backwardPath = `${root.replace(/[\\/]$/, '')}\\PROJECT.md`;
+      const forward = await window.electronAPI.readFile(forwardPath);
+      if (forward !== null) return forward;
+      return await window.electronAPI.readFile(backwardPath);
+    });
+    expect(scaffoldText).toContain('Workspace Root:');
+  });
+
+  test('files sort dropdown remains readable', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Files"]').click();
+    const contrastOk = await window.evaluate(() => {
+      const select = document.querySelector('.files-sort-select') as HTMLSelectElement | null;
+      if (!select) return false;
+      const style = getComputedStyle(select);
+      const bg = style.backgroundColor.replace(/\s+/g, '');
+      const fg = style.color.replace(/\s+/g, '');
+      return bg !== fg && bg !== 'rgba(0,0,0,0)' && fg !== 'rgba(0,0,0,0)';
+    });
+    expect(contrastOk).toBeTruthy();
+  });
+
+  test('settings image model exposes local configuration controls', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Settings"]').click();
+    await window.locator('#image-provider').selectOption('ollama');
+    await expect(window.locator('#image-model')).toBeVisible();
+    await expect(window.locator('.settings-field-hint').filter({ hasText: 'ollama pull <model>' })).toBeVisible();
+    await expect(window.locator('button:has-text("Refresh Local Image Models")')).toBeVisible();
+  });
+
+  test('captures screenshots across primary tabs and states', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await captureScreenshot(window, 'chat-tab.png');
+
+    await window.locator('button[title="Code Editor"]').click();
+    await captureScreenshot(window, 'code-tab.png');
+
+    await window.locator('button[title="Files"]').click();
+    await captureScreenshot(window, 'files-tab.png');
+
+    await window.locator('button:has-text("Agents")').click();
+    await captureScreenshot(window, 'agents-tab.png');
+
+    await window.locator('button[title="Settings"]').click();
+    await captureScreenshot(window, 'settings-tab.png');
+
+    await window.locator('button[title="Code Editor"]').click();
+    await window.locator('.ai-pane .ai-pane-select').first().click();
+    await captureScreenshot(window, 'ai-pane-dropdown.png');
+  });
+
   test('files tab can create new project', async () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
@@ -336,6 +479,7 @@ test.describe('Application Launch', () => {
     }, projectName);
 
     await window.locator('button:has-text("+ Project")').click();
+    await expect(window.locator('.toast-message').filter({ hasText: 'Project creation started...' })).toBeVisible();
 
     await expect.poll(async () => {
       return await window.evaluate(async (name) => {
@@ -345,5 +489,7 @@ test.describe('Application Launch', () => {
         return /user-files[\\/]+projects/i.test(match.path);
       }, projectName);
     }).toBeTruthy();
+
+    await expect(window.locator('.toast-message').filter({ hasText: `Project "${projectName}" created at` })).toBeVisible();
   });
 });

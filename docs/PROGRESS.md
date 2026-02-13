@@ -1,3 +1,50 @@
+## P0-R5 Regression Sweep: Window/Workspace/IPC Stability (2026-02-13)
+- Hardened renderer IPC sends to prevent main-process crashes when windows are closed/destroyed:
+  - `src/main/ipc.ts`: added `safeRendererSend` and applied it to streaming chat + terminal PTY event sends.
+  - `src/main/agent-runner.ts`: guarded `agent:update` / `agent:event` broadcasts.
+  - `src/main/runtime-diagnostics.ts`: guarded `runtime:diagnostics` broadcasts.
+  - `src/main/index.ts`: guarded `window:stateChanged` sends.
+- Improved frameless window behavior:
+  - `src/main/index.ts`: disabled transparent window mode to improve native edge resize behavior.
+  - retained maximize/restore/fullscreen guards from prior pass.
+- Fixed Plan approval with no workspace:
+  - `src/main/agent-runner.ts`: plan approval now auto-creates a workspace project when missing, assigns `workspaceRootPath`, and continues execution.
+  - `src/main/ipc.ts`, `src/preload/index.ts`, `src/renderer/components/AIPane.tsx`, `src/renderer/App.tsx`, `src/renderer/types.ts`: propagate workspace path through approve flow and update renderer state immediately.
+- Improved +Project reliability/visibility:
+  - `src/renderer/components/WorkspacePane.tsx`: explicit start/cancel/success/failure toasts + stronger click-path instrumentation.
+  - creation success still verified under `userData/user-files/projects` with scaffold `PROJECT.md`.
+
+## P0-R6 Local Image Model Configuration + UI Contrast (2026-02-13)
+- Implemented dynamic local image-model discovery:
+  - `src/main/ollama.ts`: added `listImageModels()` using `/api/tags` capability metadata with safe fallback to local model list.
+  - `src/main/ipc.ts`: added `ollama:listImageModels` IPC.
+  - `src/preload/index.ts`, `src/renderer/types.ts`: exposed `listImageModels` bridge/types.
+- Removed hardcoded local image failure path:
+  - `src/main/ipc.ts`: `generateImageWithProvider` now defaults to local provider flow, validates selected local model against discovered models, and auto-falls back to a detected local model when old/stale model names are configured.
+  - clearer install/config guidance returned on errors (`ollama pull <model>`).
+- Updated defaults for new installs:
+  - `src/main/store.ts`, `src/renderer/App.tsx`: image defaults switched to local-first (`imageProvider: ollama`, empty `imageModel`).
+- Settings UX for image models:
+  - `src/renderer/components/SettingsPane.tsx`: added local image model selector, refresh action, install hint, and inline image generation error display.
+
+## P1-R2 UI Polish: Agents Panel + Dropdown Readability (2026-02-13)
+- Added missing Agents tab styling for cards, statuses, steps, and action layout:
+  - `src/renderer/styles/globals.css` now includes full `agent-task-*` styling primitives.
+- Fixed mojibake status glyphs in agent step list:
+  - `src/renderer/components/WorkspacePane.tsx` now uses Unicode escapes.
+- Improved select/dropdown contrast consistency:
+  - `src/renderer/styles/globals.css`: explicit dark backgrounds/text/options for `.settings-field select`, `.files-sort-select`, `.terminal-shell-select`, and `.ai-pane-select`.
+
+## Validation (2026-02-13)
+- `npm run build` passed.
+- `npx playwright test tests/app.spec.ts` passed (22/22), including new regressions:
+  - auto workspace creation on Plan approve
+  - AI pane collapse/restore sizing
+  - files sort dropdown contrast
+  - settings local image-model controls
+  - screenshot capture across Chat/Code/Files/Agents/Settings + AI dropdown state
+  - +Project toast chain + filesystem path assertion under `user-files/projects`
+
 ## P0-R3 AI Pane Workflow Reliability + UX Fixes (2026-02-13)
 - Fixed Plan approval flow reliability:
   - `runAgentTask` now treats approved `plan` tasks as build-entry tasks (no dead-end approve path).
