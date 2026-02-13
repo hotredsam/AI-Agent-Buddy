@@ -4,16 +4,21 @@ export default function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false)
 
   useEffect(() => {
+    if (!window.electronAPI) {
+      console.error('electronAPI not found in window')
+      return
+    }
     window.electronAPI.windowIsMaximized().then(setIsMaximized)
   }, [])
 
-  const handleMinimize = () => window.electronAPI.windowMinimize()
+  const handleMinimize = () => window.electronAPI?.windowMinimize()
   const handleMaximize = async () => {
+    if (!window.electronAPI) return
     await window.electronAPI.windowMaximize()
     const max = await window.electronAPI.windowIsMaximized()
     setIsMaximized(max)
   }
-  const handleClose = () => window.electronAPI.windowClose()
+  const handleClose = () => window.electronAPI?.windowClose()
 
   return (
     <div className="custom-titlebar">

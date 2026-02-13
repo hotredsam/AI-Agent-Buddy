@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+console.log('[Preload] Script started')
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // --- Conversations ---
   listConversations: () => ipcRenderer.invoke('chat:listConversations'),
@@ -139,3 +141,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // --- Cloud Checkpoint ---
   generateCheckpoint: () => ipcRenderer.invoke('checkpoint:generate'),
 })
+
+console.log('[Preload] API exposed to Main World')

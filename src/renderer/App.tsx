@@ -158,6 +158,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!window.electronAPI) return
+
     async function init() {
       try {
         const [convos, sett] = await Promise.all([
@@ -197,7 +199,7 @@ export default function App() {
   }, [addToast])
 
   useEffect(() => {
-    if (!activeConversationId) {
+    if (!window.electronAPI || !activeConversationId) {
       setMessages([])
       return
     }
@@ -208,6 +210,8 @@ export default function App() {
   }, [activeConversationId, addToast])
 
   useEffect(() => {
+    if (!window.electronAPI) return
+
     const unsubToken = window.electronAPI.onToken((data) => {
       if (data.conversationId === streamingConvIdRef.current) {
         setStreamingText((prev) => prev + data.token)
@@ -666,6 +670,29 @@ export default function App() {
 
   const currentTheme = THEMES[settings.theme as ThemeName] || THEMES.glass
   const agentEmoji = currentTheme.agentEmoji || '\u{1F916}'
+
+  if (!window.electronAPI) {
+    return (
+      <div className="app-root" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', textAlign: 'center', padding: 40 }}>
+        <div>
+          <h1 style={{ marginBottom: 16 }}>Failed to load Electron API</h1>
+          <p style={{ opacity: 0.7, maxWidth: 500, lineHeight: 1.6 }}>
+            The app's bridge between the renderer and system process is missing. 
+            This usually means the preload script failed to load or the app is running in an unsupported environment.
+          </p>
+          <div style={{ marginTop: 24, padding: 16, background: 'rgba(255,255,255,0.05)', borderRadius: 8, fontFamily: 'monospace', fontSize: 12 }}>
+            Diagnostic Info: {window.location.protocol} | {window.location.host}
+          </div>
+          <button 
+            onClick={() => window.location.reload()} 
+            style={{ marginTop: 24, padding: '10px 20px', background: '#6eaaff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+          >
+            Reload App
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="app-root">

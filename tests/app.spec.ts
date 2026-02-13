@@ -5,10 +5,9 @@ test.describe('Application Launch', () => {
   let app: any;
 
   test.beforeEach(async () => {
-    // Launch the electron app
-    // We point to the main entry point compiled by tsc
+    // Launch the electron app from the root
     app = await electron.launch({
-      args: [path.join(__dirname, '../dist/main/index.js')],
+      args: [path.join(__dirname, '..')],
       env: { ...process.env, NODE_ENV: 'test' }
     });
   });

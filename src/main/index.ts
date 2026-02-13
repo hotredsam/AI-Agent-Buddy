@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
+import * as fs from 'fs'
 import { registerIpcHandlers } from './ipc'
 import { unloadModel } from './ollama'
 import { getSettings } from './store'
@@ -9,19 +10,26 @@ let mainWindow: BrowserWindow | null = null
 const isDev = process.env.NODE_ENV === 'development'
 
 function createWindow(): void {
+  const preloadPath = path.resolve(__dirname, '..', 'preload', 'index.js')
+  console.log('[Main] Preload path:', preloadPath)
+  
+  if (!fs.existsSync(preloadPath)) {
+    console.error('[Main] Preload script NOT FOUND at:', preloadPath)
+  }
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
     backgroundColor: '#0c0c14',
-    show: false, // Show after ready-to-show to avoid white flash
-    frame: false, // Custom titlebar — overrides system theme color (e.g., red)
+    show: false,
+    frame: false,
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   })
 

@@ -2848,21 +2848,6 @@ body::before {
   to { transform: rotate(360deg); }
 }
 
-.terminal-xterm-container {
-  flex: 1;
-  min-height: 0;
-  padding: 4px;
-}
-
-.terminal-xterm-container .xterm {
-  height: 100%;
-  padding: 8px;
-}
-
-.terminal-xterm-container .xterm-viewport {
-  background-color: transparent !important;
-}
-
 /* ==================== PERMISSIONS CARD ==================== */
 .permissions-card {
   margin-top: var(--space-lg);
