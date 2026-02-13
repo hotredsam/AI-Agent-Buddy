@@ -57,6 +57,11 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'glass',
   codingProvider: 'ollama',
   imageProvider: 'openai',
+  permissions: {
+    allowTerminal: true,
+    allowFileWrite: true,
+    allowAICodeExec: false,
+  },
   systemPrompts: {
     chat: 'You are a helpful AI assistant. Provide clear and direct answers.',
     coding: 'You are a senior software engineer. Return practical, correct code with minimal fluff.',
@@ -274,14 +279,24 @@ export function setSettings(newSettings: Partial<Settings>): Settings {
 
 // --- User Files Management ---
 
-export function getUserFilesDir(): string {
+function getUserFilesContainerDir(): string {
   return path.join(app.getPath('userData'), 'user-files')
 }
 
+export function getUserFilesDir(): string {
+  return path.join(getUserFilesContainerDir(), 'projects')
+}
+
 export function ensureUserFilesDir(): void {
-  const dir = getUserFilesDir()
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
+  const containerDir = getUserFilesContainerDir()
+  const projectDir = getUserFilesDir()
+  if (!fs.existsSync(containerDir)) {
+    fs.mkdirSync(containerDir, { recursive: true })
+    console.info('[Store][ensureUserFilesDir] Created container:', containerDir)
+  }
+  if (!fs.existsSync(projectDir)) {
+    fs.mkdirSync(projectDir, { recursive: true })
+    console.info('[Store][ensureUserFilesDir] Created projects root:', projectDir)
   }
 }
 
@@ -337,6 +352,7 @@ export function listUserFiles(): UserFile[] {
   ensureUserFilesDir()
   const dir = getUserFilesDir()
   try {
+    console.info('[Store][listUserFiles] Listing directory:', dir)
     const entries = fs.readdirSync(dir, { withFileTypes: true })
     return entries
       .map(e => {
@@ -410,6 +426,13 @@ export function createUserFile(fileName: string, content: string, directory?: st
     ? path.resolve(rootDir, directory)
     : rootDir
 
+  console.info('[Store][createUserFile] Called with:', {
+    fileName,
+    directory,
+    rootDir,
+    resolvedDir,
+  })
+
   if (!safeName) {
     console.error('[Store][createUserFile] Invalid file name:', fileName)
     return null
@@ -422,12 +445,14 @@ export function createUserFile(fileName: string, content: string, directory?: st
 
   try {
     fs.mkdirSync(resolvedDir, { recursive: true })
+    console.info('[Store][createUserFile] Ensured directory exists:', resolvedDir)
     const filePath = path.resolve(resolvedDir, safeName)
     if (!isInsideDir(rootDir, filePath)) {
       console.error('[Store][createUserFile] Security violation for file path:', filePath)
       return null
     }
     fs.writeFileSync(filePath, content, 'utf-8')
+    console.info('[Store][createUserFile] Created file:', filePath)
     return mapStatsToUserFile(filePath)
   } catch (error) {
     console.error('[Store][createUserFile] Failed to create file:', {
@@ -443,6 +468,11 @@ export function createUserProject(projectName: string): UserFile | null {
   ensureUserFilesDir()
   const rootDir = getUserFilesDir()
   const safeProjectName = sanitizeLeafName(projectName)
+
+  console.info('[Store][createUserProject] Called with:', {
+    projectName,
+    rootDir,
+  })
 
   if (!safeProjectName) {
     console.error('[Store][createUserProject] Invalid project name:', projectName)
@@ -462,6 +492,7 @@ export function createUserProject(projectName: string): UserFile | null {
     }
 
     fs.mkdirSync(projectPath, { recursive: true })
+    console.info('[Store][createUserProject] Created project directory:', projectPath)
 
     const createdAt = new Date().toISOString()
     const projectDocPath = path.join(projectPath, 'PROJECT.md')
@@ -473,6 +504,7 @@ export function createUserProject(projectName: string): UserFile | null {
       '',
     ].join('\n')
     fs.writeFileSync(projectDocPath, projectDoc, 'utf-8')
+    console.info('[Store][createUserProject] Wrote scaffold file:', projectDocPath)
 
     return mapStatsToUserFile(projectPath)
   } catch (error) {

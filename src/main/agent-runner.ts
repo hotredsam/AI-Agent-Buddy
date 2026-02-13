@@ -97,8 +97,28 @@ export interface AgentEvent {
 
 const activeTasks = new Map<string, AgentTask>()
 const runningCommands = new Map<string, ChildProcess>()
+const runningModelRequests = new Map<string, AbortController>()
 const MAX_LOG_ENTRIES = 600
 const MAX_FILE_WRITES = 200
+
+interface AgentPermissions {
+  allowTerminal: boolean
+  allowFileWrite: boolean
+  allowAICodeExec: boolean
+}
+
+function resolveAgentPermissions(settings: store.Settings): AgentPermissions {
+  const perms = settings.permissions || {
+    allowTerminal: true,
+    allowFileWrite: true,
+    allowAICodeExec: false,
+  }
+  return {
+    allowTerminal: perms.allowTerminal !== false,
+    allowFileWrite: perms.allowFileWrite !== false,
+    allowAICodeExec: perms.allowAICodeExec === true,
+  }
+}
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -364,6 +384,7 @@ async function runCommand(
 }
 
 function failTask(task: AgentTask, error: unknown, prefix: string) {
+  runningModelRequests.delete(task.id)
   const message = error instanceof Error ? error.message : String(error)
   task.status = 'failed'
   task.phase = 'error'
@@ -469,6 +490,12 @@ export async function cancelAgentTask(taskId: string): Promise<AgentTask> {
     runningCommands.delete(task.id)
   }
 
+  const pendingModel = runningModelRequests.get(task.id)
+  if (pendingModel) {
+    pendingModel.abort()
+    runningModelRequests.delete(task.id)
+  }
+
   appendLog(task, 'Task cancelled by user.')
   emitEvent(task, 'task_cancelled', 'Task cancelled by user.')
   broadcastUpdate()
@@ -496,14 +523,22 @@ async function planAgentTask(taskId: string): Promise<void> {
     '}',
   ].join('\n')
 
-  const result = await generateCodeWithProvider(
-    settings,
-    prompt,
-    '',
-    undefined,
-    undefined,
-    'plan'
-  )
+  const plannerController = new AbortController()
+  runningModelRequests.set(task.id, plannerController)
+  let result: { text: string | null; error?: string }
+  try {
+    result = await generateCodeWithProvider(
+      settings,
+      prompt,
+      '',
+      undefined,
+      undefined,
+      'plan',
+      plannerController.signal
+    )
+  } finally {
+    runningModelRequests.delete(task.id)
+  }
 
   if (!result.text) {
     throw new Error(result.error || 'Planner returned empty output.')
@@ -548,7 +583,12 @@ async function runAgentTask(taskId: string): Promise<void> {
   const task = activeTasks.get(taskId)
   if (!task || task.cancelRequested) return
 
-  if (task.mode === 'plan') {
+  const shouldExecuteBuild =
+    task.mode === 'plan' ||
+    task.mode === 'build' ||
+    task.mode === 'bugfix'
+
+  if (!shouldExecuteBuild) {
     task.status = 'completed'
     task.phase = 'done'
     appendLog(task, 'Plan mode complete.')
@@ -569,12 +609,16 @@ async function runAgentTask(taskId: string): Promise<void> {
   task.workspaceRootPath = workspaceRoot
   task.status = 'running'
   setTaskPhase(task, 'writing')
+  if (task.mode === 'plan') {
+    appendLog(task, 'Plan approved. Continuing into build workflow.')
+  }
   emitEvent(task, 'build_started', `Running build workflow in ${workspaceRoot}.`, {
     workspaceRootPath: workspaceRoot,
   })
   appendLog(task, `Build started in workspace: ${workspaceRoot}`)
 
   const settings = store.getSettings()
+  const permissions = resolveAgentPermissions(settings)
 
   for (let i = task.currentStepIndex; i < task.steps.length; i++) {
     if (task.cancelRequested) {
@@ -612,14 +656,22 @@ async function runAgentTask(taskId: string): Promise<void> {
         '}',
       ].join('\n')
 
-      const result = await generateCodeWithProvider(
-        settings,
-        stepPrompt,
-        '',
-        undefined,
-        undefined,
-        task.mode === 'bugfix' ? 'bugfix' : 'build'
-      )
+      const stepController = new AbortController()
+      runningModelRequests.set(task.id, stepController)
+      let result: { text: string | null; error?: string }
+      try {
+        result = await generateCodeWithProvider(
+          settings,
+          stepPrompt,
+          '',
+          undefined,
+          undefined,
+          task.mode === 'bugfix' ? 'bugfix' : 'build',
+          stepController.signal
+        )
+      } finally {
+        runningModelRequests.delete(task.id)
+      }
 
       if (!result.text) {
         throw new Error(result.error || 'Empty step output.')
@@ -629,6 +681,9 @@ async function runAgentTask(taskId: string): Promise<void> {
       const action = parseAction(result.text)
 
       if (action.action === 'write_file') {
+        if (!permissions.allowFileWrite) {
+          throw new Error('Agent file writes are disabled. Enable "Allow agent file writes" in Settings.')
+        }
         if (!action.path || typeof action.content !== 'string') {
           throw new Error('Invalid write_file payload from model.')
         }
@@ -636,8 +691,16 @@ async function runAgentTask(taskId: string): Promise<void> {
         step.result = `Wrote ${action.path}`
       } else if (action.action === 'run_command') {
         const command = action.command?.trim() || '(empty command)'
-        step.result = `Suggested command: ${command}`
-        appendLog(task, `Command suggested by model (not auto-executed): ${command}`)
+        if (!permissions.allowTerminal) {
+          throw new Error('Agent command execution is disabled. Enable "Allow agent to run commands" in Settings.')
+        }
+        const run = await runCommand(task, command, workspaceRoot)
+        task.testRuns.push(run)
+        if (!run.success) {
+          throw new Error(`Command failed: ${command} (exit ${run.exitCode})`)
+        }
+        step.result = `Executed command: ${command}`
+        appendLog(task, `Command executed successfully: ${command}`)
       } else {
         step.result = 'Skipped by model.'
         appendLog(task, 'Step skipped by model output.')
@@ -657,6 +720,10 @@ async function runAgentTask(taskId: string): Promise<void> {
   }
 
   if (task.autoRunPipeline) {
+    if (!permissions.allowTerminal) {
+      throw new Error('Agent command execution is disabled. Enable "Allow agent to run commands" in Settings.')
+    }
+
     task.status = 'testing'
     setTaskPhase(task, 'testing')
     emitEvent(task, 'testing_started', 'Running validation commands.')
@@ -694,5 +761,43 @@ async function runAgentTask(taskId: string): Promise<void> {
     testsRun: task.testRuns.length,
   })
   appendLog(task, 'Task completed successfully.')
+  broadcastUpdate()
+}
+
+export function createAgentTaskFixtureForTest(input: Partial<AgentTask> & { goal?: string } = {}): AgentTask {
+  const now = nowIso()
+  const task: AgentTask = {
+    id: input.id || uuidv4(),
+    goal: input.goal || 'Test fixture task',
+    mode: input.mode || 'plan',
+    status: input.status || 'waiting_approval',
+    phase: input.phase || 'done',
+    plan: input.plan || '1. Fixture plan',
+    steps: input.steps || [
+      {
+        id: uuidv4(),
+        description: 'Fixture step',
+        status: 'pending',
+      },
+    ],
+    logs: input.logs || [],
+    fileWrites: input.fileWrites || [],
+    testRuns: input.testRuns || [],
+    createdAt: input.createdAt || now,
+    currentStepIndex: input.currentStepIndex || 0,
+    workspaceRootPath: input.workspaceRootPath ?? null,
+    autoRunPipeline: input.autoRunPipeline ?? true,
+    cancelRequested: input.cancelRequested ?? false,
+    lastError: input.lastError,
+  }
+
+  activeTasks.set(task.id, task)
+  broadcastUpdate()
+  return task
+}
+
+export function clearAgentTasksForTest(): void {
+  activeTasks.clear()
+  runningModelRequests.clear()
   broadcastUpdate()
 }

@@ -2,7 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { registerIpcHandlers } from './ipc'
-import { unloadModel } from './ollama'
+import { unloadTrackedModel } from './runtime-diagnostics'
 import { getSettings } from './store'
 
 let mainWindow: BrowserWindow | null = null
@@ -26,6 +26,11 @@ function createWindow(): void {
     height: 800,
     minWidth: 800,
     minHeight: 600,
+    resizable: true,
+    movable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: true,
     backgroundColor: '#000c0c14', // Hex with alpha, though Electron might ignore alpha in backgroundColor if transparent: true is set
     show: false,
     frame: false,
@@ -42,6 +47,20 @@ function createWindow(): void {
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
   })
+
+  const sendWindowState = () => {
+    if (!mainWindow) return
+    mainWindow.webContents.send('window:stateChanged', {
+      isMaximized: mainWindow.isMaximized(),
+      isFullScreen: mainWindow.isFullScreen(),
+      isResizable: mainWindow.isResizable(),
+    })
+  }
+  mainWindow.on('maximize', sendWindowState)
+  mainWindow.on('unmaximize', sendWindowState)
+  mainWindow.on('enter-full-screen', sendWindowState)
+  mainWindow.on('leave-full-screen', sendWindowState)
+  mainWindow.on('restore', sendWindowState)
 
   // Load the app
   if (isDev) {
@@ -71,7 +90,7 @@ app.on('ready', () => {
 app.on('before-quit', async () => {
   try {
     const settings = getSettings()
-    await unloadModel(settings.ollamaEndpoint, settings.modelName)
+    await unloadTrackedModel(settings.ollamaEndpoint)
   } catch {
     // Best-effort cleanup
   }

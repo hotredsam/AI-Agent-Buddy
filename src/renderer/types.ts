@@ -64,6 +64,26 @@ export interface WorkspaceEntry {
   modifiedAt: string
 }
 
+export interface TerminalShellOption {
+  id: 'powershell' | 'cmd' | 'git-bash' | 'wsl'
+  label: string
+  available: boolean
+}
+
+export interface RuntimeDiagnostics {
+  activeModels: string[]
+  activeRequestCount: number
+  activeRequests: Array<{
+    id: string
+    provider: string
+    model: string
+    kind: 'chat' | 'coding' | 'plan' | 'build' | 'bugfix' | 'image'
+    startedAt: string
+  }>
+  imageModelLoaded: boolean
+  lastUnloadAt: string | null
+}
+
 export interface AgentStep {
   id: string
   description: string
@@ -161,6 +181,7 @@ export interface ElectronAPI {
   renameConversation: (id: string, title: string) => Promise<void>
   listMessages: (conversationId: string) => Promise<Message[]>
   sendMessage: (conversationId: string, text: string, settings?: Partial<Settings>) => Promise<void>
+  cancelMessage: (conversationId: string) => Promise<boolean>
   getSettings: () => Promise<Settings>
   setSettings: (settings: Partial<Settings>) => Promise<void>
   checkHealth: () => Promise<boolean>
@@ -209,15 +230,22 @@ export interface ElectronAPI {
   getAgentTask: (id: string) => Promise<AgentTask | undefined>
   approveAgentTask: (id: string) => Promise<AgentTask>
   cancelAgentTask: (id: string) => Promise<AgentTask>
+  testCreateAgentTaskFixture: (payload: Partial<AgentTask>) => Promise<AgentTask>
+  testClearAgentTasks: () => Promise<boolean>
   onAgentUpdate: (callback: (tasks: AgentTask[]) => void) => () => void
   onAgentEvent: (callback: (event: AgentEvent) => void) => () => void
 
   getSystemStats: () => Promise<{ freeMem: number; totalMem: number; platform: string; cpus: number }>
+  getRuntimeDiagnostics: () => Promise<RuntimeDiagnostics>
+  onRuntimeDiagnostics: (callback: (data: RuntimeDiagnostics) => void) => () => void
   windowMinimize: () => Promise<void>
-  windowMaximize: () => Promise<void>
+  windowMaximize: () => Promise<boolean>
+  windowRestore: () => Promise<void>
   windowClose: () => Promise<void>
   windowIsMaximized: () => Promise<boolean>
-  terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number }) => Promise<number>
+  onWindowStateChanged: (callback: (data: { isMaximized: boolean; isFullScreen: boolean; isResizable: boolean }) => void) => () => void
+  terminalListShells: () => Promise<TerminalShellOption[]>
+  terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number; shellId?: string }) => Promise<number>
   terminalWrite: (ptyId: number, data: string) => Promise<void>
   terminalResize: (ptyId: number, cols: number, rows: number) => Promise<void>
   terminalKill: (ptyId: number) => Promise<void>

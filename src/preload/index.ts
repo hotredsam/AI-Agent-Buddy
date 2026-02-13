@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   sendMessage: (conversationId: string, text: string, settings?: any) =>
     ipcRenderer.invoke('chat:sendMessage', conversationId, text, settings),
+  cancelMessage: (conversationId: string) =>
+    ipcRenderer.invoke('chat:cancel', conversationId),
 
   // --- Settings ---
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -68,7 +70,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFilesFolder: () => ipcRenderer.invoke('files:openFolder'),
   createFile: (fileName: string, content: string, directory?: string) =>
     ipcRenderer.invoke('files:createFile', fileName, content, directory),
-  createProject: (projectName: string) => ipcRenderer.invoke('files:createProject', projectName),
+  createProject: (projectName: string) => {
+    console.info('[Preload] createProject invoked:', projectName)
+    return ipcRenderer.invoke('files:createProject', projectName)
+  },
   saveFileAs: (sourcePath: string) => ipcRenderer.invoke('files:saveAs', sourcePath),
   renameFile: (oldName: string, newName: string) =>
     ipcRenderer.invoke('files:renameFile', oldName, newName),
@@ -92,12 +97,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // --- System ---
   getSystemStats: () => ipcRenderer.invoke('system:getStats'),
+  getRuntimeDiagnostics: () => ipcRenderer.invoke('runtime:getDiagnostics'),
+  onRuntimeDiagnostics: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('runtime:diagnostics', handler)
+    return () => ipcRenderer.removeListener('runtime:diagnostics', handler)
+  },
 
   // --- Window Controls (frameless) ---
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
+  windowRestore: () => ipcRenderer.invoke('window:restore'),
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  onWindowStateChanged: (callback: (data: { isMaximized: boolean; isFullScreen: boolean; isResizable: boolean }) => void) => {
+    const handler = (_event: any, data: { isMaximized: boolean; isFullScreen: boolean; isResizable: boolean }) => callback(data)
+    ipcRenderer.on('window:stateChanged', handler)
+    return () => ipcRenderer.removeListener('window:stateChanged', handler)
+  },
 
   // --- Agent Orchestration ---
   createAgentTask: (payload: any) => ipcRenderer.invoke('agent:createTask', payload),
@@ -105,6 +122,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAgentTask: (id: string) => ipcRenderer.invoke('agent:getTask', id),
   approveAgentTask: (id: string) => ipcRenderer.invoke('agent:approveTask', id),
   cancelAgentTask: (id: string) => ipcRenderer.invoke('agent:cancelTask', id),
+  testCreateAgentTaskFixture: (payload: any) => ipcRenderer.invoke('test:agent:createFixture', payload),
+  testClearAgentTasks: () => ipcRenderer.invoke('test:agent:clear'),
   onAgentUpdate: (callback: (tasks: any[]) => void) => {
     const handler = (_event: any, tasks: any[]) => callback(tasks)
     ipcRenderer.on('agent:update', handler)
@@ -117,7 +136,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // --- Terminal (PTY) ---
-  terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number }) =>
+  terminalListShells: () => ipcRenderer.invoke('terminal:listShells'),
+  terminalSpawn: (options: { cwd?: string; cols?: number; rows?: number; shellId?: string }) =>
     ipcRenderer.invoke('terminal:spawn', options),
   terminalWrite: (ptyId: number, data: string) =>
     ipcRenderer.invoke('terminal:write', ptyId, data),

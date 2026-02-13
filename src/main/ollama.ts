@@ -31,6 +31,15 @@ export interface StreamMeta {
   wasClamped: boolean
 }
 
+function resolveStreamSignal(abortSignal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(600000)
+  const anyFn = (AbortSignal as any).any as ((signals: AbortSignal[]) => AbortSignal) | undefined
+  if (!abortSignal || typeof anyFn !== 'function') {
+    return abortSignal || timeoutSignal
+  }
+  return anyFn([timeoutSignal, abortSignal])
+}
+
 /**
  * Sends a chat message to Ollama and streams back tokens via an async generator.
  * If the requested numCtx causes an error, it retries with progressively smaller values.
@@ -42,7 +51,8 @@ export async function* sendMessageStream(
   model: string,
   messages: OllamaChatMessage[],
   numCtx: number,
-  onMeta?: (meta: StreamMeta) => void
+  onMeta?: (meta: StreamMeta) => void,
+  abortSignal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
   const url = `${endpoint}/api/chat`
 
@@ -66,7 +76,7 @@ export async function* sendMessageStream(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-        signal: AbortSignal.timeout(120000), // 2 min timeout for model loading
+        signal: resolveStreamSignal(abortSignal),
       })
 
       if (!response.ok) {

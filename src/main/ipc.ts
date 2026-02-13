@@ -1,5 +1,5 @@
 import { ipcMain, IpcMainInvokeEvent, dialog, shell, BrowserWindow } from 'electron'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import * as os from 'os'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -11,10 +11,16 @@ import { sendOpenAIStream } from './openai'
 import { sendAnthropicStream } from './anthropic'
 import { sendGoogleStream } from './google'
 import { sendGroqStream } from './groq'
+import {
+  beginRuntimeRequest,
+  endRuntimeRequest,
+  getRuntimeDiagnostics,
+} from './runtime-diagnostics'
 
 // --- PTY Management ---
 const ptyProcesses = new Map<number, pty.IPty>()
 let nextPtyId = 1
+const chatAbortControllers = new Map<string, AbortController>()
 
 interface FolderEntry {
   name: string
@@ -26,13 +32,117 @@ interface FolderEntry {
 
 type Provider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
 
+interface TerminalShellOption {
+  id: 'powershell' | 'cmd' | 'git-bash' | 'wsl'
+  label: string
+  command: string
+  args: string[]
+  available: boolean
+}
+
+function commandExists(command: string): boolean {
+  if (path.isAbsolute(command)) {
+    return fs.existsSync(command)
+  }
+  try {
+    const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', [command], {
+      stdio: 'ignore',
+      shell: false,
+    })
+    return probe.status === 0
+  } catch {
+    return false
+  }
+}
+
+function listTerminalShellOptions(): TerminalShellOption[] {
+  if (process.platform !== 'win32') {
+    const sh = commandExists('bash') ? 'bash' : 'sh'
+    return [
+      {
+        id: 'powershell',
+        label: sh,
+        command: sh,
+        args: [],
+        available: true,
+      },
+    ]
+  }
+
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows'
+  const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files'
+  const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+
+  const powerShellExe = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const cmdExe = path.join(systemRoot, 'System32', 'cmd.exe')
+  const wslExe = path.join(systemRoot, 'System32', 'wsl.exe')
+  const gitBashCandidates = [
+    path.join(programFiles, 'Git', 'bin', 'bash.exe'),
+    path.join(programFilesX86, 'Git', 'bin', 'bash.exe'),
+  ]
+  const gitBashExe = gitBashCandidates.find((candidate) => fs.existsSync(candidate)) || gitBashCandidates[0]
+
+  const powershellCommand = fs.existsSync(powerShellExe)
+    ? powerShellExe
+    : (commandExists('pwsh') ? 'pwsh' : powerShellExe)
+
+  return [
+    {
+      id: 'powershell',
+      label: 'PowerShell',
+      command: powershellCommand,
+      args: ['-NoLogo'],
+      available: commandExists(powershellCommand),
+    },
+    {
+      id: 'cmd',
+      label: 'Command Prompt',
+      command: cmdExe,
+      args: [],
+      available: fs.existsSync(cmdExe),
+    },
+    {
+      id: 'git-bash',
+      label: 'Git Bash',
+      command: gitBashExe,
+      args: ['--login', '-i'],
+      available: fs.existsSync(gitBashExe),
+    },
+    {
+      id: 'wsl',
+      label: 'WSL',
+      command: wslExe,
+      args: [],
+      available: fs.existsSync(wslExe),
+    },
+  ]
+}
+
+function resolveTerminalShell(shellId?: string): TerminalShellOption {
+  const options = listTerminalShellOptions()
+  const preferred = options.find((item) => item.id === shellId && item.available)
+  if (preferred) return preferred
+  const firstAvailable = options.find((item) => item.available)
+  return firstAvailable || options[0]
+}
+
+function resolveRequestSignal(abortSignal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(600000)
+  const anyFn = (AbortSignal as any).any as ((signals: AbortSignal[]) => AbortSignal) | undefined
+  if (!abortSignal || typeof anyFn !== 'function') {
+    return abortSignal || timeoutSignal
+  }
+  return anyFn([timeoutSignal, abortSignal])
+}
+
 export async function generateCodeWithProvider(
   settings: store.Settings,
   prompt: string,
   context: string,
   providerOverride?: Provider,
   modelOverride?: string,
-  mode: 'coding' | 'plan' | 'build' | 'bugfix' = 'coding'
+  mode: 'coding' | 'plan' | 'build' | 'bugfix' = 'coding',
+  abortSignal?: AbortSignal
 ): Promise<{ text: string | null; error?: string }> {
   const provider = providerOverride || settings.codingProvider || settings.activeProvider || 'ollama'
   const model = modelOverride || settings.codingModel || settings.modelName
@@ -55,7 +165,15 @@ export async function generateCodeWithProvider(
     ? `${prompt}\n\nCurrent file context:\n${context}`
     : prompt
 
+  let runtimeRequestId: string | null = null
   try {
+    runtimeRequestId = await beginRuntimeRequest({
+      provider,
+      model,
+      kind: mode,
+      endpoint: settings.ollamaEndpoint,
+    })
+
     if (provider === 'ollama') {
       const response = await fetch(`${settings.ollamaEndpoint}/api/chat`, {
         method: 'POST',
@@ -69,6 +187,7 @@ export async function generateCodeWithProvider(
             { role: 'user', content: userPrompt },
           ],
         }),
+        signal: resolveRequestSignal(abortSignal),
       })
       if (!response.ok) {
         return { text: null, error: `Ollama error (${response.status})` }
@@ -92,6 +211,7 @@ export async function generateCodeWithProvider(
             { role: 'user', content: userPrompt },
           ],
         }),
+        signal: resolveRequestSignal(abortSignal),
       })
       if (!response.ok) return { text: null, error: `OpenAI error (${response.status})` }
       const data: any = await response.json()
@@ -113,6 +233,7 @@ export async function generateCodeWithProvider(
           system: modeSystemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
         }),
+        signal: resolveRequestSignal(abortSignal),
       })
       if (!response.ok) return { text: null, error: `Anthropic error (${response.status})` }
       const data: any = await response.json()
@@ -134,6 +255,7 @@ export async function generateCodeWithProvider(
               },
             ],
           }),
+          signal: resolveRequestSignal(abortSignal),
         }
       )
       if (!response.ok) return { text: null, error: `Google error (${response.status})` }
@@ -155,12 +277,17 @@ export async function generateCodeWithProvider(
           { role: 'user', content: userPrompt },
         ],
       }),
+      signal: resolveRequestSignal(abortSignal),
     })
     if (!response.ok) return { text: null, error: `Groq error (${response.status})` }
     const data: any = await response.json()
     return { text: data?.choices?.[0]?.message?.content || null }
   } catch (error: any) {
     return { text: null, error: error?.message || 'Unknown coding generation error' }
+  } finally {
+    if (runtimeRequestId) {
+      endRuntimeRequest(runtimeRequestId)
+    }
   }
 }
 
@@ -173,39 +300,92 @@ async function generateImageWithProvider(
   const provider = providerOverride || settings.imageProvider || 'openai'
   const model = modelOverride || settings.imageModel || 'gpt-image-1'
   const apiKeys = settings.apiKeys || {}
-
-  if (provider !== 'openai') {
-    return { filePath: null, error: `Image generation for provider "${provider}" is not configured yet.` }
-  }
-  if (!apiKeys.openai) return { filePath: null, error: 'Missing OpenAI API key.' }
   const imageSystemPrompt = settings.systemPrompts?.image || ''
   const mergedPrompt = imageSystemPrompt ? `${imageSystemPrompt}\n\n${prompt}` : prompt
 
-  try {
-    const response = await fetch('https://api.openai.com/v1/images/generations', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKeys.openai}`,
-      },
-      body: JSON.stringify({
-        model,
-        prompt: mergedPrompt,
-        size: '1024x1024',
-      }),
-    })
-    if (!response.ok) return { filePath: null, error: `OpenAI image error (${response.status})` }
-    const data: any = await response.json()
-    const b64 = data?.data?.[0]?.b64_json
-    if (!b64) return { filePath: null, error: 'Image response missing data.' }
-
+  const writeImageBuffer = async (buffer: Buffer): Promise<string> => {
     store.ensureUserFilesDir()
     const fileName = `generated-image-${Date.now()}.png`
     const filePath = path.join(store.getUserFilesPath(), fileName)
-    fs.writeFileSync(filePath, Buffer.from(b64, 'base64'))
-    return { filePath }
+    fs.writeFileSync(filePath, buffer)
+    return filePath
+  }
+
+  let runtimeRequestId: string | null = null
+  try {
+    runtimeRequestId = await beginRuntimeRequest({
+      provider,
+      model,
+      kind: 'image',
+      endpoint: settings.ollamaEndpoint,
+    })
+
+    if (provider === 'openai') {
+      if (!apiKeys.openai) return { filePath: null, error: 'Missing OpenAI API key.' }
+      const response = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKeys.openai}`,
+        },
+        body: JSON.stringify({
+          model,
+          prompt: mergedPrompt,
+          size: '1024x1024',
+          response_format: 'b64_json',
+        }),
+      })
+      if (!response.ok) return { filePath: null, error: `OpenAI image error (${response.status})` }
+      const data: any = await response.json()
+      const b64 = data?.data?.[0]?.b64_json
+      if (!b64) return { filePath: null, error: 'Image response missing data.' }
+      const filePath = await writeImageBuffer(Buffer.from(b64, 'base64'))
+      return { filePath }
+    }
+
+    if (provider === 'ollama') {
+      const response = await fetch(`${settings.ollamaEndpoint}/v1/images/generations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          prompt: mergedPrompt,
+          size: '1024x1024',
+          response_format: 'b64_json',
+        }),
+      })
+      if (!response.ok) {
+        const details = await response.text()
+        return { filePath: null, error: `Ollama image error (${response.status}): ${details || 'Unknown error'}` }
+      }
+      const data: any = await response.json()
+      const b64 = data?.data?.[0]?.b64_json
+      if (typeof b64 === 'string' && b64.length > 0) {
+        const filePath = await writeImageBuffer(Buffer.from(b64, 'base64'))
+        return { filePath }
+      }
+      const imageUrl = data?.data?.[0]?.url
+      if (typeof imageUrl === 'string' && imageUrl.length > 0) {
+        const imageResponse = await fetch(imageUrl)
+        if (!imageResponse.ok) {
+          return { filePath: null, error: `Failed to download generated image (${imageResponse.status}).` }
+        }
+        const buffer = Buffer.from(await imageResponse.arrayBuffer())
+        const filePath = await writeImageBuffer(buffer)
+        return { filePath }
+      }
+      return { filePath: null, error: 'Ollama image response missing image data.' }
+    }
+
+    return { filePath: null, error: `Image generation for provider "${provider}" is not configured yet.` }
   } catch (error: any) {
     return { filePath: null, error: error?.message || 'Unknown image generation error' }
+  } finally {
+    if (runtimeRequestId) {
+      endRuntimeRequest(runtimeRequestId)
+    }
   }
 }
 
@@ -273,6 +453,13 @@ export function registerIpcHandlers(): void {
       userText: string,
       settings?: Partial<store.Settings>
     ): Promise<void> => {
+      const existingController = chatAbortControllers.get(conversationId)
+      if (existingController) {
+        existingController.abort()
+      }
+      const abortController = new AbortController()
+      chatAbortControllers.set(conversationId, abortController)
+
       // Get current settings, merge with any overrides
       const currentSettings = store.getSettings()
       const effectiveSettings = settings
@@ -286,7 +473,8 @@ export function registerIpcHandlers(): void {
         const imagePrompt = userText.replace(/^\/image\s*/i, '').trim() || userText
         const imageResult = await generateImageWithProvider(effectiveSettings, imagePrompt)
         if (imageResult.filePath) {
-          const message = `Image generated and saved:\n${imageResult.filePath}`
+          const normalizedImagePath = imageResult.filePath.replace(/\\/g, '/')
+          const message = `![Generated image](${normalizedImagePath})\n\nImage generated and saved:\n${imageResult.filePath}`
           store.addMessage(conversationId, 'assistant', message)
           event.sender.send('chat:done', { conversationId, fullResponse: message })
         } else {
@@ -311,9 +499,17 @@ export function registerIpcHandlers(): void {
 
       // Stream response from configured provider
       let fullResponse = ''
+      const provider = effectiveSettings.activeProvider || 'ollama'
+      let runtimeRequestId: string | null = null
 
       try {
-        const provider = effectiveSettings.activeProvider || 'ollama'
+        runtimeRequestId = await beginRuntimeRequest({
+          provider,
+          model: effectiveSettings.modelName,
+          kind: 'chat',
+          endpoint: effectiveSettings.ollamaEndpoint,
+        })
+
         const apiKeys = effectiveSettings.apiKeys || {}
         let stream: AsyncGenerator<string, void, unknown>
 
@@ -321,22 +517,22 @@ export function registerIpcHandlers(): void {
           if (!apiKeys.openai) {
             throw new Error('OpenAI API key is missing. Add it in Settings > API Keys.')
           }
-          stream = sendOpenAIStream(apiKeys.openai, effectiveSettings.modelName, ollamaMessages)
+          stream = sendOpenAIStream(apiKeys.openai, effectiveSettings.modelName, ollamaMessages, abortController.signal)
         } else if (provider === 'anthropic') {
           if (!apiKeys.anthropic) {
             throw new Error('Anthropic API key is missing. Add it in Settings > API Keys.')
           }
-          stream = sendAnthropicStream(apiKeys.anthropic, effectiveSettings.modelName, ollamaMessages)
+          stream = sendAnthropicStream(apiKeys.anthropic, effectiveSettings.modelName, ollamaMessages, abortController.signal)
         } else if (provider === 'google') {
           if (!apiKeys.google) {
             throw new Error('Google API key is missing. Add it in Settings > API Keys.')
           }
-          stream = sendGoogleStream(apiKeys.google, effectiveSettings.modelName, ollamaMessages)
+          stream = sendGoogleStream(apiKeys.google, effectiveSettings.modelName, ollamaMessages, abortController.signal)
         } else if (provider === 'groq') {
           if (!apiKeys.groq) {
             throw new Error('Groq API key is missing. Add it in Settings > API Keys.')
           }
-          stream = sendGroqStream(apiKeys.groq, effectiveSettings.modelName, ollamaMessages)
+          stream = sendGroqStream(apiKeys.groq, effectiveSettings.modelName, ollamaMessages, abortController.signal)
         } else {
           stream = sendMessageStream(
             effectiveSettings.ollamaEndpoint,
@@ -351,7 +547,8 @@ export function registerIpcHandlers(): void {
                 effectiveCtx: meta.effectiveCtx,
                 wasClamped: meta.wasClamped,
               })
-            }
+            },
+            abortController.signal
           )
         }
 
@@ -386,6 +583,8 @@ export function registerIpcHandlers(): void {
           } else {
             errorMessage = `Network request failed to the active provider API. Check internet access, API key, and model name.`
           }
+        } else if (lower.includes('abort') || lower.includes('cancel')) {
+          errorMessage = `Request cancelled.`
         } else if (lower.includes('timeout') || lower.includes('aborted')) {
           errorMessage = `Request timed out. Check model availability and try again.`
         }
@@ -406,9 +605,24 @@ export function registerIpcHandlers(): void {
           conversationId,
           error: errorMessage,
         })
+      } finally {
+        if (runtimeRequestId) {
+          endRuntimeRequest(runtimeRequestId)
+        }
+        if (chatAbortControllers.get(conversationId) === abortController) {
+          chatAbortControllers.delete(conversationId)
+        }
       }
     }
   )
+
+  ipcMain.handle('chat:cancel', async (_event: IpcMainInvokeEvent, conversationId: string): Promise<boolean> => {
+    const controller = chatAbortControllers.get(conversationId)
+    if (!controller) return false
+    controller.abort()
+    chatAbortControllers.delete(conversationId)
+    return true
+  })
 
   // --- Settings Handlers ---
 
@@ -463,6 +677,10 @@ export function registerIpcHandlers(): void {
       return generateImageWithProvider(settings, payload.prompt, payload.provider, payload.model)
     }
   )
+
+  ipcMain.handle('runtime:getDiagnostics', async () => {
+    return getRuntimeDiagnostics()
+  })
 
   // --- Ollama Health Check ---
 
@@ -773,12 +991,30 @@ export function registerIpcHandlers(): void {
     BrowserWindow.fromWebContents(event.sender)?.minimize()
   })
 
-  ipcMain.handle('window:maximize', async (event) => {
+  ipcMain.handle('window:maximize', async (event): Promise<boolean> => {
     const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return false
+    if (win.isFullScreen()) {
+      win.setFullScreen(false)
+      return false
+    }
     if (win?.isMaximized()) {
       win.unmaximize()
+      return false
     } else {
       win?.maximize()
+      return true
+    }
+  })
+
+  ipcMain.handle('window:restore', async (event): Promise<void> => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return
+    if (win.isFullScreen()) {
+      win.setFullScreen(false)
+    }
+    if (win.isMaximized()) {
+      win.restore()
     }
   })
 
@@ -869,15 +1105,40 @@ export function registerIpcHandlers(): void {
     return agent.approveAgentTask(id)
   })
 
+  if (process.env.NODE_ENV === 'test') {
+    ipcMain.handle('test:agent:createFixture', async (_event, payload?: Partial<agent.AgentTask>) => {
+      return agent.createAgentTaskFixtureForTest(payload || {})
+    })
+
+    ipcMain.handle('test:agent:clear', async () => {
+      agent.clearAgentTasksForTest()
+      return true
+    })
+  }
+
   // --- Terminal PTY Handlers ---
+
+  ipcMain.handle('terminal:listShells', async () => {
+    return listTerminalShellOptions().map((item) => ({
+      id: item.id,
+      label: item.label,
+      available: item.available,
+    }))
+  })
 
   ipcMain.handle(
     'terminal:spawn',
-    async (event: IpcMainInvokeEvent, options: { cwd?: string; cols?: number; rows?: number }): Promise<number> => {
-      const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash'
+    async (
+      event: IpcMainInvokeEvent,
+      options: { cwd?: string; cols?: number; rows?: number; shellId?: string }
+    ): Promise<number> => {
+      const shell = resolveTerminalShell(options.shellId)
+      if (!shell.available) {
+        throw new Error(`Requested shell "${options.shellId || shell.id}" is not available on this system.`)
+      }
       const ptyId = nextPtyId++
       
-      const ptyProcess = pty.spawn(shell, [], {
+      const ptyProcess = pty.spawn(shell.command, shell.args, {
         name: 'xterm-256color',
         cols: options.cols || 80,
         rows: options.rows || 24,
@@ -885,16 +1146,44 @@ export function registerIpcHandlers(): void {
         env: process.env as any,
       })
 
+      console.info('[IPC][terminal:spawn] Spawned shell', {
+        ptyId,
+        shellId: shell.id,
+        shellCommand: shell.command,
+      })
+
+      const sendSafe = (channel: string, payload: any) => {
+        try {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(channel, payload)
+          }
+        } catch {
+          // Renderer is gone; ignore send failures.
+        }
+      }
+
       ptyProcess.onData((data) => {
-        event.sender.send(`terminal:data:${ptyId}`, data)
+        sendSafe(`terminal:data:${ptyId}`, data)
       })
 
       ptyProcess.onExit(({ exitCode, signal }) => {
-        event.sender.send(`terminal:exit:${ptyId}`, { exitCode, signal })
+        sendSafe(`terminal:exit:${ptyId}`, { exitCode, signal })
         ptyProcesses.delete(ptyId)
       })
 
       ptyProcesses.set(ptyId, ptyProcess)
+
+      event.sender.once('destroyed', () => {
+        const proc = ptyProcesses.get(ptyId)
+        if (!proc) return
+        try {
+          proc.kill()
+        } catch {
+          // Ignore kill errors for already-exited PTYs.
+        }
+        ptyProcesses.delete(ptyId)
+      })
+
       return ptyId
     }
   )

@@ -7,10 +7,20 @@ interface AnthropicStreamChunk {
   }
 }
 
+function resolveStreamSignal(abortSignal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(600000)
+  const anyFn = (AbortSignal as any).any as ((signals: AbortSignal[]) => AbortSignal) | undefined
+  if (!abortSignal || typeof anyFn !== 'function') {
+    return abortSignal || timeoutSignal
+  }
+  return anyFn([timeoutSignal, abortSignal])
+}
+
 export async function* sendAnthropicStream(
   apiKey: string,
   model: string,
-  messages: OllamaChatMessage[]
+  messages: OllamaChatMessage[],
+  abortSignal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
   const systemMessages = messages.filter((m) => m.role === 'system').map((m) => m.content)
   const chatMessages = messages
@@ -34,7 +44,7 @@ export async function* sendAnthropicStream(
       messages: chatMessages,
       stream: true,
     }),
-    signal: AbortSignal.timeout(120000),
+    signal: resolveStreamSignal(abortSignal),
   })
 
   if (!response.ok) {
