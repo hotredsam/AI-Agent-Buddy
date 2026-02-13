@@ -83,4 +83,33 @@ test.describe('Application Launch', () => {
     await expect(tab).toBeVisible();
     await expect(tab).toContainText('untitled-1.txt');
   });
+
+  test('terminal is accessible', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Code Editor"]').click();
+    
+    // Terminal should be visible by default in code view
+    const terminal = window.locator('.terminal-pane');
+    await expect(terminal).toBeVisible();
+    
+    // Check for xterm container
+    const xterm = window.locator('.terminal-xterm-container');
+    await expect(xterm).toBeVisible();
+  });
+
+  test('agents tab is visible in workspace', async () => {
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    await window.locator('button[title="Files"]').click();
+    
+    // Click "Agents" tab
+    await window.locator('button:has-text("Agents")').click();
+    
+    // Verify agents view content
+    await expect(window.locator('.workspace-pane-agents')).toBeVisible();
+    await expect(window.locator('h2')).toContainText('Agent Orchestration');
+  });
 });

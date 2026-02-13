@@ -2835,9 +2835,6 @@ body::before {
 .terminal-xterm-container .xterm-viewport {
   background-color: transparent !important;
 }
-  font-size: 12px;
-  padding: var(--space-xs) 0;
-}
 
 .terminal-spinner {
   width: 10px;
