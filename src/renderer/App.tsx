@@ -550,8 +550,9 @@ export default function App() {
     }
     setMessages((prev) => [...prev, tempUserMsg])
     setIsStreaming(true)
-    setStreamingText('')
-    setChatRequestState('thinking')
+    const isImageRequest = text.trim().toLowerCase().startsWith('/image')
+    setStreamingText(isImageRequest ? 'Generating image...' : '')
+    setChatRequestState(isImageRequest ? 'writing' : 'thinking')
     streamingConvIdRef.current = activeConversationId
 
     try {
@@ -574,6 +575,21 @@ export default function App() {
       streamingConvIdRef.current = null
     }
   }, [activeConversationId, isStreaming, addToast, conversations])
+
+  const handleCancelMessage = useCallback(async () => {
+    const activeStreamingConversation = streamingConvIdRef.current
+    if (!activeStreamingConversation) return
+    try {
+      await window.electronAPI.cancelMessage(activeStreamingConversation)
+    } catch {
+      // Ignore cancel errors and still reset local stream state.
+    }
+    setIsStreaming(false)
+    setStreamingText('')
+    setChatRequestState('idle')
+    streamingConvIdRef.current = null
+    addToast('Request cancelled.', 'warning')
+  }, [addToast])
 
   const handleSaveSettings = useCallback(async (newSettings: Settings) => {
     try {
@@ -708,7 +724,12 @@ export default function App() {
                 onSaveAsFile={handleSaveCodeBlockAsFile}
                 onCodeFileAction={handleCodeFileAction}
               />
-              <Composer onSend={handleSendMessage} disabled={isStreaming || !activeConversationId} />
+              <Composer
+                onSend={handleSendMessage}
+                disabled={isStreaming || !activeConversationId}
+                isStreaming={isStreaming}
+                onCancel={handleCancelMessage}
+              />
             </>
           )}
 

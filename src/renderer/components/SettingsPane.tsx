@@ -556,8 +556,8 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
 
         <div className="permission-toggle-row">
           <div className="permission-label">
-            <span className="permission-label-title">Terminal Access</span>
-            <span className="permission-label-desc">Allow running commands in the built-in terminal</span>
+            <span className="permission-label-title">Allow agent to run commands</span>
+            <span className="permission-label-desc">Allow agent workflows to execute build/test/run commands</span>
           </div>
           <label className="toggle-switch">
             <input
@@ -576,8 +576,8 @@ export default function SettingsPane({ settings, onSave }: SettingsPaneProps) {
 
         <div className="permission-toggle-row">
           <div className="permission-label">
-            <span className="permission-label-title">File Write</span>
-            <span className="permission-label-desc">Allow saving and modifying files on disk</span>
+            <span className="permission-label-title">Allow agent file writes</span>
+            <span className="permission-label-desc">Allow the agent to create and modify files in the workspace</span>
           </div>
           <label className="toggle-switch">
             <input

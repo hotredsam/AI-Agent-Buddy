@@ -43,7 +43,12 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   const [loading, setLoading] = useState(true)
   const [dragOver, setDragOver] = useState(false)
   const [draggingFileName, setDraggingFileName] = useState<string | null>(null)
-  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const [dropTargetName, setDropTargetName] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    file: UserFile
+    x: number
+    y: number
+  } | null>(null)
   const [detailsFile, setDetailsFile] = useState<UserFileInfo | null>(null)
   const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type'>('modified')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -86,7 +91,7 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   }, [activeTab, loadFiles, loadTasks])
 
   useEffect(() => {
-    const closeMenu = () => setOpenMenu(null)
+    const closeMenu = () => setContextMenu(null)
     window.addEventListener('click', closeMenu)
     return () => window.removeEventListener('click', closeMenu)
   }, [])
@@ -107,13 +112,22 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
     const name = prompt('New Project Name:')
     if (!name?.trim()) return
     try {
-      console.info('[WorkspacePane] Creating project:', name.trim())
-      const project = await window.electronAPI.createProject(name.trim())
+      const trimmedName = name.trim()
+      console.info('[WorkspacePane] + Project click fired for:', trimmedName)
+      const before = await window.electronAPI.listFiles()
+      const project = await window.electronAPI.createProject(trimmedName)
       if (project) {
-        loadFiles()
+        const after = await window.electronAPI.listFiles()
+        console.info('[WorkspacePane] createProject succeeded:', {
+          projectPath: project.path,
+          existedBefore: before.some((f) => f.name === trimmedName && f.isDirectory),
+          existsAfter: after.some((f) => f.name === trimmedName && f.isDirectory),
+        })
+        await loadFiles()
         onNotify?.(`Project "${name}" created.`, 'success')
       } else {
-        onNotify?.('Failed to create project.')
+        const exists = before.some((f) => f.name === trimmedName && f.isDirectory)
+        onNotify?.(exists ? `Project "${trimmedName}" already exists.` : `Failed to create project "${trimmedName}".`)
       }
     } catch (error: any) {
       console.error('[WorkspacePane] createProject failed:', error)
@@ -139,6 +153,12 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
+    setDropTargetName(null)
+
+    if (draggingFileName) {
+      setDraggingFileName(null)
+      return
+    }
 
     const droppedFiles = e.dataTransfer.files
     if (!droppedFiles || droppedFiles.length === 0) return
@@ -191,6 +211,16 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
       onNotify?.(`Moved "${file.name}" to ${moved.path}.`, 'success')
     } else {
       onNotify?.('Move cancelled or failed.', 'warning')
+    }
+  }
+
+  const handleMoveIntoFolder = async (fileName: string, destinationFolder: UserFile) => {
+    const moved = await window.electronAPI.moveFile(fileName, destinationFolder.path)
+    if (moved) {
+      await loadFiles()
+      onNotify?.(`Moved "${fileName}" to "${destinationFolder.name}".`, 'success')
+    } else {
+      onNotify?.(`Failed to move "${fileName}" into "${destinationFolder.name}".`)
     }
   }
 
@@ -336,13 +366,16 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                 if (sortBy === 'size') return (a.size - b.size) * dir
                 if (sortBy === 'type') return a.type.localeCompare(b.type) * dir
                 return (new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime()) * dir
-              }).map((file, index, arr) => (
+              }).map((file) => (
                 <div
                   key={file.name}
-                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''} ${file.isDirectory ? 'is-folder' : ''}`}
+                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''} ${file.isDirectory ? 'is-folder' : ''} ${dropTargetName === file.name ? 'drop-target' : ''}`}
                   draggable
                   onDragStart={() => setDraggingFileName(file.name)}
-                  onDragEnd={() => setDraggingFileName(null)}
+                  onDragEnd={() => {
+                    setDraggingFileName(null)
+                    setDropTargetName(null)
+                  }}
                   onDoubleClick={() => {
                     if (file.isDirectory && onOpenProject) {
                       onOpenProject(file.path)
@@ -350,9 +383,29 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                       onOpenInEditor(file)
                     }
                   }}
-                  onDragOver={(e) => {
+                  onContextMenu={(e) => {
                     e.preventDefault()
-                    // Drag logic (simple reordering for now, nesting later)
+                    setContextMenu({ file, x: e.clientX, y: e.clientY })
+                  }}
+                  onDragOver={(e) => {
+                    if (!file.isDirectory || !draggingFileName || draggingFileName === file.name) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setDropTargetName(file.name)
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetName === file.name) {
+                      setDropTargetName(null)
+                    }
+                  }}
+                  onDrop={async (e) => {
+                    if (!file.isDirectory || !draggingFileName || draggingFileName === file.name) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    const sourceName = draggingFileName
+                    setDraggingFileName(null)
+                    setDropTargetName(null)
+                    await handleMoveIntoFolder(sourceName, file)
                   }}
                 >
                   <span className="file-icon">{fileIcon(file)}</span>
@@ -370,36 +423,51 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                       Open Project
                     </button>
                   )}
-                  <div className="file-actions">
-                    <button
-                      className="file-menu-btn"
-                      title="File actions"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenMenu((prev) => (prev === file.name ? null : file.name))
-                      }}
-                    >
-                      ⋯
-                    </button>
-                    {openMenu === file.name && (
-                      <div className="file-action-menu" onClick={(e) => e.stopPropagation()}>
-                        {!file.isDirectory && <button onClick={() => { handleSaveAs(file); setOpenMenu(null) }}>Download</button>}
-                        <button onClick={() => { onOpenInEditor?.(file); setOpenMenu(null) }}>Open in Code</button>
-                        <button onClick={() => { handleRename(file); setOpenMenu(null) }}>Rename</button>
-                        <button onClick={() => { handleMove(file); setOpenMenu(null) }}>Move</button>
-                        <button onClick={() => { handleDuplicate(file); setOpenMenu(null) }}>Duplicate</button>
-                        <button onClick={() => { handleCopyPath(file); setOpenMenu(null) }}>Copy Path</button>
-                        <button onClick={() => { handleDetails(file); setOpenMenu(null) }}>View Details</button>
-                        <button onClick={() => { handleShowInExplorer(file); setOpenMenu(null) }}>Open in Explorer</button>
-                        {!file.isDirectory && <button onClick={() => { handleOpenExternal(file); setOpenMenu(null) }}>Open Externally</button>}
-                        <button className="danger" onClick={() => { handleDelete(file.name); setOpenMenu(null) }}>
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {contextMenu && (
+            <div
+              className="file-action-menu context-menu"
+              style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {!contextMenu.file.isDirectory && (
+                <button onClick={() => { handleSaveAs(contextMenu.file); setContextMenu(null) }}>
+                  Download
+                </button>
+              )}
+              <button onClick={() => { onOpenInEditor?.(contextMenu.file); setContextMenu(null) }}>
+                Open in Code
+              </button>
+              <button onClick={() => { handleRename(contextMenu.file); setContextMenu(null) }}>
+                Rename
+              </button>
+              <button onClick={() => { handleMove(contextMenu.file); setContextMenu(null) }}>
+                Move
+              </button>
+              <button onClick={() => { handleDuplicate(contextMenu.file); setContextMenu(null) }}>
+                Duplicate
+              </button>
+              <button onClick={() => { handleCopyPath(contextMenu.file); setContextMenu(null) }}>
+                Copy Path
+              </button>
+              <button onClick={() => { handleDetails(contextMenu.file); setContextMenu(null) }}>
+                View Details
+              </button>
+              <button onClick={() => { handleShowInExplorer(contextMenu.file); setContextMenu(null) }}>
+                Open in Explorer
+              </button>
+              {!contextMenu.file.isDirectory && (
+                <button onClick={() => { handleOpenExternal(contextMenu.file); setContextMenu(null) }}>
+                  Open Externally
+                </button>
+              )}
+              <button className="danger" onClick={() => { handleDelete(contextMenu.file.name); setContextMenu(null) }}>
+                Delete
+              </button>
             </div>
           )}
         </div>
@@ -498,3 +566,4 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
     </div>
   )
 }
+

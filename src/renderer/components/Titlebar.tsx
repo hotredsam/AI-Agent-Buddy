@@ -9,14 +9,17 @@ export default function Titlebar() {
       return
     }
     window.electronAPI.windowIsMaximized().then(setIsMaximized)
+    const unsub = window.electronAPI.onWindowStateChanged((state) => {
+      setIsMaximized(state.isMaximized || state.isFullScreen)
+    })
+    return () => unsub()
   }, [])
 
   const handleMinimize = () => window.electronAPI?.windowMinimize()
   const handleMaximize = async () => {
     if (!window.electronAPI) return
-    await window.electronAPI.windowMaximize()
-    const max = await window.electronAPI.windowIsMaximized()
-    setIsMaximized(max)
+    const maximized = await window.electronAPI.windowMaximize()
+    setIsMaximized(maximized)
   }
   const handleClose = () => window.electronAPI?.windowClose()
 

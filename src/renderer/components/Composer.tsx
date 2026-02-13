@@ -3,9 +3,11 @@ import React, { useState, useRef, useEffect } from 'react'
 interface ComposerProps {
   onSend: (text: string) => void
   disabled: boolean
+  isStreaming?: boolean
+  onCancel?: () => void
 }
 
-export default function Composer({ onSend, disabled }: ComposerProps) {
+export default function Composer({ onSend, disabled, isStreaming = false, onCancel }: ComposerProps) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -54,11 +56,11 @@ export default function Composer({ onSend, disabled }: ComposerProps) {
         />
         <button
           className="composer-send-btn"
-          onClick={handleSend}
-          disabled={disabled || !text.trim()}
-          title="Send"
+          onClick={isStreaming ? onCancel : handleSend}
+          disabled={isStreaming ? false : (disabled || !text.trim())}
+          title={isStreaming ? 'Stop' : 'Send'}
         >
-          &#x27A4;
+          {isStreaming ? '\u25A0' : '\u27A4'}
         </button>
       </div>
     </div>

@@ -35,49 +35,78 @@ function renderMarkdown(
   onRunInTerminal?: (command: string) => void,
   onSaveAsFile?: (code: string, language: string) => void | Promise<void>,
   onCodeFileAction?: (action: 'add' | 'download' | 'open' | 'run', code: string, language: string) => void | Promise<void>,
+  isStreamingReasoning = false,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
-  const thinkBlockRegex = /<think>([\s\S]*?)<\/think>/gi
-  let cursor = 0
-  let thinkMatch: RegExpExecArray | null
+  const segments = splitThinkSegments(text)
 
-  while ((thinkMatch = thinkBlockRegex.exec(text)) !== null) {
-    if (thinkMatch.index > cursor) {
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index]
+    if (!segment.content.trim()) continue
+
+    if (segment.type === 'text') {
       nodes.push(
         ...renderMarkdownCore(
-          text.slice(cursor, thinkMatch.index),
+          segment.content,
           onSendToEditor,
           onRunInTerminal,
           onSaveAsFile,
           onCodeFileAction
         )
       )
+      continue
     }
-    const reasoning = (thinkMatch[1] || '').trim()
-    if (reasoning) {
-      nodes.push(
-        <ThinkingBlock
-          key={`thinking-${nodes.length}`}
-          content={reasoning}
-        />
-      )
-    }
-    cursor = thinkMatch.index + thinkMatch[0].length
-  }
 
-  if (cursor < text.length) {
     nodes.push(
-      ...renderMarkdownCore(
-        text.slice(cursor),
-        onSendToEditor,
-        onRunInTerminal,
-        onSaveAsFile,
-        onCodeFileAction
-      )
+      <ThinkingBlock
+        key={`thinking-${nodes.length}-${index}`}
+        content={segment.content.trim()}
+        live={Boolean(isStreamingReasoning && segment.open)}
+      />
     )
   }
 
   return nodes
+}
+
+function splitThinkSegments(text: string): Array<{ type: 'text' | 'thinking'; content: string; open?: boolean }> {
+  const segments: Array<{ type: 'text' | 'thinking'; content: string; open?: boolean }> = []
+  const openTag = '<think>'
+  const closeTag = '</think>'
+  const lower = text.toLowerCase()
+  let cursor = 0
+
+  while (cursor < text.length) {
+    const openIndex = lower.indexOf(openTag, cursor)
+    if (openIndex === -1) {
+      segments.push({ type: 'text', content: text.slice(cursor) })
+      break
+    }
+
+    if (openIndex > cursor) {
+      segments.push({ type: 'text', content: text.slice(cursor, openIndex) })
+    }
+
+    const contentStart = openIndex + openTag.length
+    const closeIndex = lower.indexOf(closeTag, contentStart)
+    if (closeIndex === -1) {
+      segments.push({
+        type: 'thinking',
+        content: text.slice(contentStart),
+        open: true,
+      })
+      break
+    }
+
+    segments.push({
+      type: 'thinking',
+      content: text.slice(contentStart, closeIndex),
+      open: false,
+    })
+    cursor = closeIndex + closeTag.length
+  }
+
+  return segments
 }
 
 function renderMarkdownCore(
@@ -134,6 +163,19 @@ function renderBlocks(text: string, keyOffset: number): React.ReactNode[] {
 
   while (i < lines.length) {
     const line = lines[i]
+    const imageMatch = line.trim().match(/^!\[(.*?)\]\((.+?)\)$/)
+
+    if (imageMatch) {
+      nodes.push(
+        <MarkdownImage
+          key={`img-${keyOffset}-${i}`}
+          alt={imageMatch[1] || 'generated image'}
+          source={imageMatch[2]}
+        />
+      )
+      i++
+      continue
+    }
 
     // Blockquote
     if (line.startsWith('> ')) {
@@ -203,6 +245,29 @@ function renderBlocks(text: string, keyOffset: number): React.ReactNode[] {
   return nodes
 }
 
+function normalizeImageSource(source: string): string {
+  const trimmed = source.trim()
+  if (/^https?:\/\//i.test(trimmed) || /^data:/i.test(trimmed) || /^file:\/\//i.test(trimmed)) {
+    return trimmed
+  }
+  const normalized = trimmed.replace(/\\/g, '/')
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return encodeURI(`file:///${normalized}`)
+  }
+  if (normalized.startsWith('/')) {
+    return encodeURI(`file://${normalized}`)
+  }
+  return encodeURI(`file:///${normalized}`)
+}
+
+function MarkdownImage({ alt, source }: { alt: string; source: string }) {
+  return (
+    <div className="markdown-image-card">
+      <img src={normalizeImageSource(source)} alt={alt} />
+    </div>
+  )
+}
+
 function renderInline(text: string, keyOffset: number): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
   // Process inline patterns: bold (**text**), italic (*text*), inline code (`text`)
@@ -234,7 +299,7 @@ function renderInline(text: string, keyOffset: number): React.ReactNode[] {
   return nodes
 }
 
-function ThinkingBlock({ content }: { content: string }) {
+function ThinkingBlock({ content, live = false }: { content: string; live?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   return (
     <div className="thinking-block">
@@ -242,7 +307,8 @@ function ThinkingBlock({ content }: { content: string }) {
         className="thinking-toggle"
         onClick={() => setExpanded((prev) => !prev)}
       >
-        Reasoning {expanded ? '▾' : '▸'}
+        {live ? 'Reasoning (live) ' : 'Reasoning '}
+        {expanded ? 'v' : '>'}
       </button>
       {expanded && (
         <pre className="thinking-content">{content}</pre>
@@ -453,7 +519,7 @@ export default function ChatPane({
           <div className="message-row assistant">
             <div className="message-content">
               <div className="message-bubble">
-                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal, onSaveAsFile, onCodeFileAction)}
+                {renderMarkdown(streamingText, onSendToEditor, onRunInTerminal, onSaveAsFile, onCodeFileAction, true)}
                 <span className="streaming-cursor" />
               </div>
               <div className="message-avatar">{agentEmoji}</div>
@@ -492,3 +558,4 @@ export default function ChatPane({
     </div>
   )
 }
+
