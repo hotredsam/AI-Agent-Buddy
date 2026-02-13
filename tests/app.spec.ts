@@ -459,6 +459,8 @@ test.describe('Application Launch', () => {
 
     await window.locator('button[title="Code Editor"]').click();
     await captureScreenshot(window, 'code-tab.png');
+    await window.locator('button[title="Toggle split"]').click();
+    await captureScreenshot(window, 'terminal-split.png');
 
     await window.locator('button[title="Files"]').click();
     await captureScreenshot(window, 'files-tab.png');
