@@ -29,12 +29,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setSettings: (settings: any) =>
     ipcRenderer.invoke('settings:set', settings),
 
+  // --- Session State ---
+  getSessionState: () => ipcRenderer.invoke('session:get'),
+  setSessionState: (state: any) => ipcRenderer.invoke('session:set'),
+
   // --- Health Check ---
   checkHealth: () => ipcRenderer.invoke('ollama:health'),
   listModels: () => ipcRenderer.invoke('ollama:listModels'),
   listImageModels: () => ipcRenderer.invoke('ollama:listImageModels'),
   runDiagnostics: () => ipcRenderer.invoke('ollama:diagnostics'),
   pullModel: (modelName: string) => ipcRenderer.invoke('ollama:pullModel', modelName),
+
+  // --- llama.cpp ---
+  checkLlamaCppHealth: () => ipcRenderer.invoke('llamacpp:health'),
+  listLlamaCppModels: () => ipcRenderer.invoke('llamacpp:listModels'),
+  launchLlamaCpp: () => ipcRenderer.invoke('llamacpp:launch'),
+  pickLlamaCppBinary: () => ipcRenderer.invoke('llamacpp:pickBinary'),
+  pickLlamaCppModel: () => ipcRenderer.invoke('llamacpp:pickModel'),
+
+  // --- Workspace file operations ---
+  createWorkspaceFileFromAI: (destFolder: string, fileName: string, content: string) =>
+    ipcRenderer.invoke('workspace:createFileFromAI', destFolder, fileName, content),
+  importFileToWorkspace: (sourcePath: string, destFolder: string) =>
+    ipcRenderer.invoke('workspace:importFile', sourcePath, destFolder),
 
   // --- Streaming Event Listeners ---
   onToken: (callback: (data: any) => void) => {
@@ -135,6 +152,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('agent:event', handler)
     return () => ipcRenderer.removeListener('agent:event', handler)
   },
+  onAgentTerminalOutput: (callback: (data: { text: string; stream: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('agent:terminalOutput', handler)
+    return () => ipcRenderer.removeListener('agent:terminalOutput', handler)
+  },
 
   // --- Terminal (PTY) ---
   terminalListShells: () => ipcRenderer.invoke('terminal:listShells'),
@@ -164,6 +186,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // --- File Read/Write ---
   readFile: (filePath: string) => ipcRenderer.invoke('files:readFile', filePath),
+  readFileForChat: (filePath: string) => ipcRenderer.invoke('files:readFileForChat', filePath),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('files:writeFile', filePath, content),
   generateCode: (payload: {

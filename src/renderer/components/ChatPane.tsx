@@ -17,6 +17,7 @@ interface ChatPaneProps {
   defaultCtx?: number
   modelName?: string
   agentEmoji?: string
+  profilePicture?: string
   onSendToEditor?: (code: string) => void
   onRunInTerminal?: (command: string) => void
   onSaveAsFile?: (code: string, language: string) => void | Promise<void>
@@ -419,6 +420,7 @@ export default function ChatPane({
   defaultCtx = 0,
   modelName,
   agentEmoji = '\u{1F916}',
+  profilePicture,
   onSendToEditor,
   onRunInTerminal,
   onSaveAsFile,
@@ -509,7 +511,9 @@ export default function ChatPane({
                 {renderMarkdown(msg.content, onSendToEditor, onRunInTerminal, onSaveAsFile, onCodeFileAction)}
               </div>
               <div className="message-avatar">
-                {msg.role === 'user' ? '\u{1F464}' : agentEmoji}
+                {msg.role === 'user' && profilePicture
+                  ? <img src={profilePicture} alt="You" className="avatar-img" />
+                  : msg.role === 'user' ? '\u{1F464}' : agentEmoji}
               </div>
             </div>
           </div>

@@ -20,10 +20,13 @@ import { sendOpenAIStream } from './openai'
 import { sendAnthropicStream } from './anthropic'
 import { sendGoogleStream } from './google'
 import { sendGroqStream } from './groq'
+import { sendLlamaCppStream, checkLlamaCppHealth, listLlamaCppModels } from './llamacpp'
 import {
   beginRuntimeRequest,
   endRuntimeRequest,
   getRuntimeDiagnostics,
+  updateRuntimeRequestPhase,
+  RuntimeRequestOutcome,
 } from './runtime-diagnostics'
 
 // --- PTY Management ---
@@ -39,7 +42,7 @@ interface FolderEntry {
   modifiedAt: string
 }
 
-type Provider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+type Provider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
 
 interface TerminalShellOption {
   id: 'powershell' | 'cmd' | 'git-bash' | 'wsl'
@@ -184,13 +187,17 @@ export async function generateCodeWithProvider(
     : prompt
 
   let runtimeRequestId: string | null = null
+  let runtimeOutcome: RuntimeRequestOutcome = 'completed'
+  let runtimeError: string | undefined
   try {
     runtimeRequestId = await beginRuntimeRequest({
       provider,
       model,
       kind: mode,
       endpoint: settings.ollamaEndpoint,
+      phase: 'preparing',
     })
+    updateRuntimeRequestPhase(runtimeRequestId, 'requesting')
 
     if (provider === 'ollama') {
       const response = await fetch(`${settings.ollamaEndpoint}/api/chat`, {
@@ -208,14 +215,46 @@ export async function generateCodeWithProvider(
         signal: resolveRequestSignal(abortSignal),
       })
       if (!response.ok) {
+        runtimeOutcome = 'failed'
+        runtimeError = `Ollama error (${response.status})`
         return { text: null, error: `Ollama error (${response.status})` }
       }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
       const data: any = await response.json()
       return { text: data?.message?.content || null }
     }
 
+    if (provider === 'llamacpp') {
+      const llamaEndpoint = settings.llamacppEndpoint || 'http://127.0.0.1:8080'
+      const llamaModel = modelOverride || settings.llamacppModelName || model
+      const response = await fetch(`${llamaEndpoint}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: llamaModel,
+          messages: [
+            { role: 'system', content: modeSystemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        }),
+        signal: resolveRequestSignal(abortSignal),
+      })
+      if (!response.ok) {
+        runtimeOutcome = 'failed'
+        runtimeError = `llama.cpp error (${response.status})`
+        return { text: null, error: `llama.cpp error (${response.status})` }
+      }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
+      const lcData: any = await response.json()
+      return { text: lcData?.choices?.[0]?.message?.content || null }
+    }
+
     if (provider === 'openai') {
-      if (!apiKeys.openai) return { text: null, error: 'Missing OpenAI API key.' }
+      if (!apiKeys.openai) {
+        runtimeOutcome = 'failed'
+        runtimeError = 'Missing OpenAI API key.'
+        return { text: null, error: 'Missing OpenAI API key.' }
+      }
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -231,13 +270,22 @@ export async function generateCodeWithProvider(
         }),
         signal: resolveRequestSignal(abortSignal),
       })
-      if (!response.ok) return { text: null, error: `OpenAI error (${response.status})` }
+      if (!response.ok) {
+        runtimeOutcome = 'failed'
+        runtimeError = `OpenAI error (${response.status})`
+        return { text: null, error: `OpenAI error (${response.status})` }
+      }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
       const data: any = await response.json()
       return { text: data?.choices?.[0]?.message?.content || null }
     }
 
     if (provider === 'anthropic') {
-      if (!apiKeys.anthropic) return { text: null, error: 'Missing Anthropic API key.' }
+      if (!apiKeys.anthropic) {
+        runtimeOutcome = 'failed'
+        runtimeError = 'Missing Anthropic API key.'
+        return { text: null, error: 'Missing Anthropic API key.' }
+      }
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -253,13 +301,22 @@ export async function generateCodeWithProvider(
         }),
         signal: resolveRequestSignal(abortSignal),
       })
-      if (!response.ok) return { text: null, error: `Anthropic error (${response.status})` }
+      if (!response.ok) {
+        runtimeOutcome = 'failed'
+        runtimeError = `Anthropic error (${response.status})`
+        return { text: null, error: `Anthropic error (${response.status})` }
+      }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
       const data: any = await response.json()
       return { text: data?.content?.[0]?.text || null }
     }
 
     if (provider === 'google') {
-      if (!apiKeys.google) return { text: null, error: 'Missing Google API key.' }
+      if (!apiKeys.google) {
+        runtimeOutcome = 'failed'
+        runtimeError = 'Missing Google API key.'
+        return { text: null, error: 'Missing Google API key.' }
+      }
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKeys.google)}`,
         {
@@ -276,12 +333,21 @@ export async function generateCodeWithProvider(
           signal: resolveRequestSignal(abortSignal),
         }
       )
-      if (!response.ok) return { text: null, error: `Google error (${response.status})` }
+      if (!response.ok) {
+        runtimeOutcome = 'failed'
+        runtimeError = `Google error (${response.status})`
+        return { text: null, error: `Google error (${response.status})` }
+      }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
       const data: any = await response.json()
       return { text: data?.candidates?.[0]?.content?.parts?.[0]?.text || null }
     }
 
-    if (!apiKeys.groq) return { text: null, error: 'Missing Groq API key.' }
+    if (!apiKeys.groq) {
+      runtimeOutcome = 'failed'
+      runtimeError = 'Missing Groq API key.'
+      return { text: null, error: 'Missing Groq API key.' }
+    }
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -297,14 +363,21 @@ export async function generateCodeWithProvider(
       }),
       signal: resolveRequestSignal(abortSignal),
     })
-    if (!response.ok) return { text: null, error: `Groq error (${response.status})` }
+    if (!response.ok) {
+      runtimeOutcome = 'failed'
+      runtimeError = `Groq error (${response.status})`
+      return { text: null, error: `Groq error (${response.status})` }
+    }
+    updateRuntimeRequestPhase(runtimeRequestId, 'processing')
     const data: any = await response.json()
     return { text: data?.choices?.[0]?.message?.content || null }
   } catch (error: any) {
+    runtimeOutcome = abortSignal?.aborted ? 'cancelled' : 'failed'
+    runtimeError = error?.message || 'Unknown coding generation error'
     return { text: null, error: error?.message || 'Unknown coding generation error' }
   } finally {
     if (runtimeRequestId) {
-      endRuntimeRequest(runtimeRequestId)
+      endRuntimeRequest(runtimeRequestId, { outcome: runtimeOutcome, error: runtimeError })
     }
   }
 }
@@ -355,16 +428,24 @@ async function generateImageWithProvider(
   }
 
   let runtimeRequestId: string | null = null
+  let runtimeOutcome: RuntimeRequestOutcome = 'completed'
+  let runtimeError: string | undefined
   try {
     runtimeRequestId = await beginRuntimeRequest({
       provider,
       model,
       kind: 'image',
       endpoint: settings.ollamaEndpoint,
+      phase: 'preparing',
     })
+    updateRuntimeRequestPhase(runtimeRequestId, 'requesting')
 
     if (provider === 'openai') {
-      if (!apiKeys.openai) return { filePath: null, error: 'Missing OpenAI API key.' }
+      if (!apiKeys.openai) {
+        runtimeOutcome = 'failed'
+        runtimeError = 'Missing OpenAI API key.'
+        return { filePath: null, error: 'Missing OpenAI API key.' }
+      }
       const response = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
         headers: {
@@ -378,10 +459,19 @@ async function generateImageWithProvider(
           response_format: 'b64_json',
         }),
       })
-      if (!response.ok) return { filePath: null, error: `OpenAI image error (${response.status})` }
+      if (!response.ok) {
+        runtimeOutcome = 'failed'
+        runtimeError = `OpenAI image error (${response.status})`
+        return { filePath: null, error: `OpenAI image error (${response.status})` }
+      }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
       const data: any = await response.json()
       const b64 = data?.data?.[0]?.b64_json
-      if (!b64) return { filePath: null, error: 'Image response missing data.' }
+      if (!b64) {
+        runtimeOutcome = 'failed'
+        runtimeError = 'Image response missing data.'
+        return { filePath: null, error: 'Image response missing data.' }
+      }
       const filePath = await writeImageBuffer(Buffer.from(b64, 'base64'))
       return { filePath }
     }
@@ -405,8 +495,11 @@ async function generateImageWithProvider(
         const availableInfo = available.length > 0
           ? ` Available local models: ${available.join(', ')}.`
           : ' No local models detected. Install one with `ollama pull <model>`.'
+        runtimeOutcome = 'failed'
+        runtimeError = `Ollama image error (${response.status})`
         return { filePath: null, error: `Ollama image error (${response.status}): ${details || 'Unknown error'}.${availableInfo}` }
       }
+      updateRuntimeRequestPhase(runtimeRequestId, 'processing')
       const data: any = await response.json()
       const b64 = data?.data?.[0]?.b64_json
       if (typeof b64 === 'string' && b64.length > 0) {
@@ -417,21 +510,29 @@ async function generateImageWithProvider(
       if (typeof imageUrl === 'string' && imageUrl.length > 0) {
         const imageResponse = await fetch(imageUrl)
         if (!imageResponse.ok) {
+          runtimeOutcome = 'failed'
+          runtimeError = `Failed to download generated image (${imageResponse.status}).`
           return { filePath: null, error: `Failed to download generated image (${imageResponse.status}).` }
         }
         const buffer = Buffer.from(await imageResponse.arrayBuffer())
         const filePath = await writeImageBuffer(buffer)
         return { filePath }
       }
+      runtimeOutcome = 'failed'
+      runtimeError = 'Ollama image response missing image data.'
       return { filePath: null, error: 'Ollama image response missing image data.' }
     }
 
+    runtimeOutcome = 'failed'
+    runtimeError = `Image generation for provider "${provider}" is not configured yet.`
     return { filePath: null, error: `Image generation for provider "${provider}" is not configured yet.` }
   } catch (error: any) {
+    runtimeOutcome = 'failed'
+    runtimeError = error?.message || 'Unknown image generation error'
     return { filePath: null, error: error?.message || 'Unknown image generation error' }
   } finally {
     if (runtimeRequestId) {
-      endRuntimeRequest(runtimeRequestId)
+      endRuntimeRequest(runtimeRequestId, { outcome: runtimeOutcome, error: runtimeError })
     }
   }
 }
@@ -549,6 +650,9 @@ export function registerIpcHandlers(): void {
       let fullResponse = ''
       const provider = effectiveSettings.activeProvider || 'ollama'
       let runtimeRequestId: string | null = null
+      let runtimeOutcome: RuntimeRequestOutcome = 'completed'
+      let runtimeError: string | undefined
+      let streamStarted = false
 
       try {
         runtimeRequestId = await beginRuntimeRequest({
@@ -556,7 +660,9 @@ export function registerIpcHandlers(): void {
           model: effectiveSettings.modelName,
           kind: 'chat',
           endpoint: effectiveSettings.ollamaEndpoint,
+          phase: 'preparing',
         })
+        updateRuntimeRequestPhase(runtimeRequestId, 'requesting')
 
         const apiKeys = effectiveSettings.apiKeys || {}
         let stream: AsyncGenerator<string, void, unknown>
@@ -581,6 +687,10 @@ export function registerIpcHandlers(): void {
             throw new Error('Groq API key is missing. Add it in Settings > API Keys.')
           }
           stream = sendGroqStream(apiKeys.groq, effectiveSettings.modelName, ollamaMessages, abortController.signal)
+        } else if (provider === 'llamacpp') {
+          const llamaEndpoint = effectiveSettings.llamacppEndpoint || 'http://127.0.0.1:8080'
+          const llamaModel = effectiveSettings.llamacppModelName || effectiveSettings.modelName
+          stream = sendLlamaCppStream(llamaEndpoint, llamaModel, ollamaMessages, abortController.signal)
         } else {
           stream = sendMessageStream(
             effectiveSettings.ollamaEndpoint,
@@ -601,6 +711,10 @@ export function registerIpcHandlers(): void {
         }
 
         for await (const token of stream) {
+          if (!streamStarted) {
+            streamStarted = true
+            updateRuntimeRequestPhase(runtimeRequestId, 'streaming')
+          }
           fullResponse += token
           // Send each token to the renderer
           safeRendererSend(sender, 'chat:token', {
@@ -608,6 +722,7 @@ export function registerIpcHandlers(): void {
             token,
           })
         }
+        updateRuntimeRequestPhase(runtimeRequestId, 'processing')
 
         // Save the complete assistant message
         store.addMessage(conversationId, 'assistant', fullResponse)
@@ -620,6 +735,8 @@ export function registerIpcHandlers(): void {
       } catch (error) {
         let errorMessage =
           error instanceof Error ? error.message : 'Unknown error occurred'
+        runtimeOutcome = abortController.signal.aborted ? 'cancelled' : 'failed'
+        runtimeError = errorMessage
 
         // Make error messages more actionable
         const lower = errorMessage.toLowerCase()
@@ -655,7 +772,7 @@ export function registerIpcHandlers(): void {
         })
       } finally {
         if (runtimeRequestId) {
-          endRuntimeRequest(runtimeRequestId)
+          endRuntimeRequest(runtimeRequestId, { outcome: runtimeOutcome, error: runtimeError })
         }
         if (chatAbortControllers.get(conversationId) === abortController) {
           chatAbortControllers.delete(conversationId)
@@ -690,6 +807,16 @@ export function registerIpcHandlers(): void {
       return store.setSettings(settings)
     }
   )
+
+  // --- Session State Handlers ---
+
+  ipcMain.handle('session:get', async () => {
+    return store.getSessionState()
+  })
+
+  ipcMain.handle('session:set', async (_event, state) => {
+    store.setSessionState(state)
+  })
 
   ipcMain.handle(
     'ai:generateCode',
@@ -774,6 +901,54 @@ export function registerIpcHandlers(): void {
     async (_event: IpcMainInvokeEvent, modelName: string): Promise<boolean> => {
       const settings = store.getSettings()
       return pullModel(settings.ollamaEndpoint, modelName)
+    }
+  )
+
+  // --- llama.cpp Handlers ---
+
+  ipcMain.handle(
+    'llamacpp:health',
+    async (): Promise<boolean> => {
+      const settings = store.getSettings()
+      return checkLlamaCppHealth(settings.llamacppEndpoint || 'http://127.0.0.1:8080')
+    }
+  )
+
+  ipcMain.handle(
+    'llamacpp:listModels',
+    async (): Promise<string[]> => {
+      const settings = store.getSettings()
+      return listLlamaCppModels(settings.llamacppEndpoint || 'http://127.0.0.1:8080')
+    }
+  )
+
+  ipcMain.handle(
+    'llamacpp:launch',
+    async (): Promise<boolean> => {
+      const settings = store.getSettings()
+      const binaryPath = settings.llamacppBinaryPath
+      const modelPath = settings.llamacppModelPath
+      if (!binaryPath || !modelPath) {
+        throw new Error('llama.cpp binary path and model path must be configured in Settings.')
+      }
+      if (!fs.existsSync(binaryPath)) {
+        throw new Error(`llama-server binary not found at: ${binaryPath}`)
+      }
+      if (!fs.existsSync(modelPath)) {
+        throw new Error(`Model file not found at: ${modelPath}`)
+      }
+      const port = (settings.llamacppEndpoint || 'http://127.0.0.1:8080').replace(/^https?:\/\/[^:]+:/, '').replace(/\/.*$/, '') || '8080'
+      const ctxSize = String(Math.min(settings.numCtx || 32768, 32768))
+      const threads = String(Math.max(1, os.cpus().length - 2))
+      const child = spawn(binaryPath, [
+        '-m', modelPath,
+        '--ctx-size', ctxSize,
+        '--threads', threads,
+        '--gpu-layers', '35',
+        '--port', port,
+      ], { detached: true, stdio: 'ignore' })
+      child.unref()
+      return true
     }
   )
 
@@ -1363,6 +1538,99 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  // Smart file reader for chat attachments - handles binary formats
+  ipcMain.handle(
+    'files:readFileForChat',
+    async (
+      _event: IpcMainInvokeEvent,
+      filePath: string
+    ): Promise<{ content: string; type: 'text' | 'image' | 'binary' }> => {
+      const ext = path.extname(filePath).toLowerCase()
+      const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico']
+      const textExts = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.rs', '.go',
+        '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.swift', '.kt', '.dart',
+        '.html', '.css', '.scss', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.sh',
+        '.bash', '.ps1', '.bat', '.sql', '.r', '.lua', '.zig', '.vue', '.svelte', '.astro',
+        '.env', '.gitignore', '.dockerignore', '.log', '.csv']
+
+      try {
+        // Image files - return description instead of binary data
+        if (imageExts.includes(ext)) {
+          const stats = fs.statSync(filePath)
+          const name = path.basename(filePath)
+          const sizeKB = Math.round(stats.size / 1024)
+          return { content: `[Image: ${name}, ${sizeKB}KB]`, type: 'image' }
+        }
+
+        // Word documents (.docx)
+        if (ext === '.docx' || ext === '.doc') {
+          try {
+            const mammoth = await import('mammoth')
+            const buffer = fs.readFileSync(filePath)
+            const result = await mammoth.extractRawText({ buffer })
+            return { content: result.value || '[Empty document]', type: 'text' }
+          } catch {
+            return { content: '[Could not parse Word document]', type: 'binary' }
+          }
+        }
+
+        // Excel files (.xlsx, .xls)
+        if (ext === '.xlsx' || ext === '.xls') {
+          try {
+            const XLSX = await import('xlsx')
+            const workbook = XLSX.read(fs.readFileSync(filePath))
+            const sheets: string[] = []
+            for (const name of workbook.SheetNames) {
+              const sheet = workbook.Sheets[name]
+              const csv = XLSX.utils.sheet_to_csv(sheet)
+              sheets.push(`--- Sheet: ${name} ---\n${csv}`)
+            }
+            return { content: sheets.join('\n\n') || '[Empty spreadsheet]', type: 'text' }
+          } catch {
+            return { content: '[Could not parse Excel file]', type: 'binary' }
+          }
+        }
+
+        // PDF files
+        if (ext === '.pdf') {
+          try {
+            const pdfMod = await import('pdf-parse')
+            const pdfParse = (pdfMod as any).default || pdfMod
+            const buffer = fs.readFileSync(filePath)
+            const data = await pdfParse(buffer)
+            return { content: data.text || '[Empty PDF]', type: 'text' }
+          } catch {
+            return { content: '[Could not parse PDF file]', type: 'binary' }
+          }
+        }
+
+        // Known text files or small files - read as UTF-8
+        if (textExts.includes(ext) || ext === '') {
+          const content = fs.readFileSync(filePath, 'utf-8')
+          return { content, type: 'text' }
+        }
+
+        // CSV special case (already in textExts but just to be safe)
+        // Unknown extensions - try reading as text if small enough
+        const stats = fs.statSync(filePath)
+        if (stats.size < 1_000_000) {
+          const content = fs.readFileSync(filePath, 'utf-8')
+          // Check if it looks like text (no null bytes in first 8KB)
+          const sample = content.slice(0, 8192)
+          if (!sample.includes('\0')) {
+            return { content, type: 'text' }
+          }
+        }
+
+        const name = path.basename(filePath)
+        const sizeKB = Math.round(stats.size / 1024)
+        return { content: `[Binary file: ${name}, ${sizeKB}KB]`, type: 'binary' }
+      } catch (err: any) {
+        return { content: `[Error reading file: ${err?.message || 'Unknown'}]`, type: 'binary' }
+      }
+    }
+  )
+
   ipcMain.handle(
     'files:writeFile',
     async (
@@ -1378,4 +1646,108 @@ export function registerIpcHandlers(): void {
       }
     }
   )
+
+  // --- workspace file creation from AI ---
+  ipcMain.handle(
+    'workspace:createFileFromAI',
+    async (
+      _event: IpcMainInvokeEvent,
+      destFolder: string,
+      fileName: string,
+      content: string
+    ): Promise<boolean> => {
+      try {
+        const filePath = path.resolve(path.join(destFolder, fileName))
+        if (!filePath.startsWith(path.resolve(destFolder))) return false
+        fs.mkdirSync(path.dirname(filePath), { recursive: true })
+        fs.writeFileSync(filePath, content, 'utf-8')
+        return true
+      } catch {
+        return false
+      }
+    }
+  )
+
+  // --- workspace file import (copy file into workspace) ---
+  ipcMain.handle(
+    'workspace:importFile',
+    async (
+      _event: IpcMainInvokeEvent,
+      sourcePath: string,
+      destFolder: string
+    ): Promise<boolean> => {
+      try {
+        const fileName = path.basename(sourcePath)
+        const destPath = path.resolve(path.join(destFolder, fileName))
+        if (!destPath.startsWith(path.resolve(destFolder))) return false
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        fs.copyFileSync(sourcePath, destPath)
+        return true
+      } catch {
+        return false
+      }
+    }
+  )
+
+  // --- llama.cpp file pickers ---
+  ipcMain.handle('llamacpp:pickBinary', async (): Promise<string | null> => {
+    const result = await dialog.showOpenDialog({
+      title: 'Select llama-server binary',
+      filters: [
+        { name: 'Executables', extensions: ['exe'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle('llamacpp:pickModel', async (): Promise<string | null> => {
+    const result = await dialog.showOpenDialog({
+      title: 'Select GGUF model file',
+      filters: [
+        { name: 'GGUF Models', extensions: ['gguf'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // --- Auto-launch llama.cpp server on startup ---
+  setTimeout(async () => {
+    try {
+      const settings = store.getSettings()
+      const binaryPath = settings.llamacppBinaryPath
+      const modelPath = settings.llamacppModelPath
+      if (!binaryPath || !modelPath) return
+      if (!fs.existsSync(binaryPath) || !fs.existsSync(modelPath)) return
+
+      // Check if server is already running
+      const endpoint = settings.llamacppEndpoint || 'http://127.0.0.1:8080'
+      const alreadyRunning = await checkLlamaCppHealth(endpoint).catch(() => false)
+      if (alreadyRunning) {
+        console.info('[IPC] llama.cpp server already running at', endpoint)
+        return
+      }
+
+      const port = endpoint.replace(/^https?:\/\/[^:]+:/, '').replace(/\/.*$/, '') || '8080'
+      console.info('[IPC] Auto-launching llama.cpp server...')
+      const ctxSize = String(Math.min(settings.numCtx || 32768, 32768))
+      const threads = String(Math.max(1, os.cpus().length - 2))
+      const child = spawn(binaryPath, [
+        '-m', modelPath,
+        '--ctx-size', ctxSize,
+        '--threads', threads,
+        '--gpu-layers', '35',
+        '--port', port,
+      ], { detached: true, stdio: 'ignore' })
+      child.unref()
+      console.info('[IPC] llama.cpp server launched (pid:', child.pid, ')')
+    } catch (err) {
+      console.error('[IPC] Failed to auto-launch llama.cpp:', err)
+    }
+  }, 2000) // Delay to let app finish loading
 }

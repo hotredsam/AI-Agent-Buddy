@@ -38,7 +38,7 @@ function formatDate(iso: string): string {
 }
 
 export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify, onDownloaded }: WorkspacePaneProps) {
-  const [activeTab, setActiveTab] = useState<'files' | 'agents'>('files')
+  const [activeTab, setActiveTab] = useState<'files' | 'agents' | 'browse'>('files')
   const [files, setFiles] = useState<UserFile[]>([])
   const [loading, setLoading] = useState(true)
   const [dragOver, setDragOver] = useState(false)
@@ -50,9 +50,24 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
     y: number
   } | null>(null)
   const [detailsFile, setDetailsFile] = useState<UserFileInfo | null>(null)
-  const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type'>('modified')
+  const [renameTarget, setRenameTarget] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [showNewProject, setShowNewProject] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type' | 'custom'>('modified')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [customOrder, setCustomOrder] = useState<string[]>([])
+  const [dropInsertIndex, setDropInsertIndex] = useState<number | null>(null)
   
+  // Search/filter
+  const [searchQuery, setSearchQuery] = useState('')
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
+
+  // PC Browser state
+  const [browsePath, setBrowsePath] = useState<string | null>(null)
+  const [browseEntries, setBrowseEntries] = useState<Array<{ name: string; path: string; isDirectory: boolean; size: number; modifiedAt: string }>>([])
+  const [browseLoading, setBrowseLoading] = useState(false)
+
   // Agent state
   const [tasks, setTasks] = useState<AgentTask[]>([])
   const [newGoal, setNewGoal] = useState('')
@@ -108,36 +123,25 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
     }
   }
 
-  const handleCreateProject = async () => {
-    onNotify?.('Project creation started...', 'warning')
-    const suggested = `Project-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`
-    const name = prompt('New Project Name:', suggested)
-    if (!name?.trim()) {
-      onNotify?.('Project creation cancelled.', 'warning')
+  const handleCreateProject = async (name?: string) => {
+    const projectName = name || newProjectName.trim()
+    if (!projectName) {
+      setShowNewProject(true)
+      setNewProjectName(`Project-${new Date().toISOString().slice(0, 10)}`)
       return
     }
+    setShowNewProject(false)
+    setNewProjectName('')
     try {
-      const trimmedName = name.trim()
-      console.info('[WorkspacePane] + Project click fired for:', trimmedName)
-      onNotify?.(`Creating project "${trimmedName}"...`, 'warning')
-      const before = await window.electronAPI.listFiles()
-      const project = await window.electronAPI.createProject(trimmedName)
+      const project = await window.electronAPI.createProject(projectName)
       if (project) {
-        const after = await window.electronAPI.listFiles()
-        console.info('[WorkspacePane] createProject succeeded:', {
-          projectPath: project.path,
-          existedBefore: before.some((f) => f.name === trimmedName && f.isDirectory),
-          existsAfter: after.some((f) => f.name === trimmedName && f.isDirectory),
-        })
         await loadFiles()
-        onNotify?.(`Project "${name}" created at ${project.path}`, 'success')
+        onNotify?.(`Project "${projectName}" created.`, 'success')
       } else {
-        const exists = before.some((f) => f.name === trimmedName && f.isDirectory)
-        onNotify?.(exists ? `Project "${trimmedName}" already exists.` : `Failed to create project "${trimmedName}".`)
+        onNotify?.(`Failed to create project "${projectName}". It may already exist.`)
       }
     } catch (error: any) {
-      console.error('[WorkspacePane] createProject failed:', error)
-      onNotify?.(`Failed to create project "${name.trim()}": ${error?.message || 'Unknown error'}`)
+      onNotify?.(`Failed to create project: ${error?.message || 'Unknown error'}`)
     }
   }
 
@@ -199,11 +203,19 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   }
 
   const handleRename = async (file: UserFile) => {
-    const nextName = prompt('Rename file to:', file.name)?.trim()
-    if (!nextName || nextName === file.name) return
-    const renamed = await window.electronAPI.renameFile(file.name, nextName)
+    setRenameTarget(file.name)
+    setRenameValue(file.name)
+  }
+
+  const handleRenameConfirm = async () => {
+    const oldName = renameTarget
+    const nextName = renameValue.trim()
+    setRenameTarget(null)
+    setRenameValue('')
+    if (!oldName || !nextName || nextName === oldName) return
+    const renamed = await window.electronAPI.renameFile(oldName, nextName)
     if (renamed) {
-      setFiles((prev) => prev.map((f) => (f.name === file.name ? renamed : f)))
+      setFiles((prev) => prev.map((f) => (f.name === oldName ? renamed : f)))
       onNotify?.(`Renamed to "${nextName}".`, 'success')
     } else {
       onNotify?.('Rename failed.')
@@ -303,13 +315,19 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
   return (
     <div className="workspace-pane-container">
       <div className="workspace-tab-bar">
-        <button 
+        <button
           className={`workspace-tab-btn ${activeTab === 'files' ? 'active' : ''}`}
           onClick={() => setActiveTab('files')}
         >
-          Files
+          Library
         </button>
-        <button 
+        <button
+          className={`workspace-tab-btn ${activeTab === 'browse' ? 'active' : ''}`}
+          onClick={() => setActiveTab('browse')}
+        >
+          Browse PC
+        </button>
+        <button
           className={`workspace-tab-btn ${activeTab === 'agents' ? 'active' : ''}`}
           onClick={() => setActiveTab('agents')}
         >
@@ -326,6 +344,22 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
         >
           <div className="files-header">
             <h2>Library</h2>
+            <div className="files-search-bar">
+              <input
+                className="files-search-input"
+                type="text"
+                placeholder="Search files..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              <button
+                className={`files-view-toggle ${viewMode === 'grid' ? 'active' : ''}`}
+                onClick={() => setViewMode(v => v === 'list' ? 'grid' : 'list')}
+                title={viewMode === 'list' ? 'Grid view' : 'List view'}
+              >
+                {viewMode === 'list' ? '\u2637' : '\u2630'}
+              </button>
+            </div>
             <div className="files-header-actions">
               <select
                 className="files-sort-select"
@@ -337,11 +371,12 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                 <option value="name">Sort: Name</option>
                 <option value="size">Sort: Size</option>
                 <option value="type">Sort: Type</option>
+                <option value="custom">Sort: Custom</option>
               </select>
-              <button className="files-btn secondary" onClick={() => setSortDir((p) => p === 'asc' ? 'desc' : 'asc')}>
-                {sortDir === 'asc' ? 'Asc' : 'Desc'}
+              <button className="files-btn secondary" onClick={() => setSortDir((p) => p === 'asc' ? 'desc' : 'asc')} title={`Sort direction: ${sortDir === 'asc' ? 'Ascending' : 'Descending'}`}>
+                {sortDir === 'asc' ? '\u2191' : '\u2193'}
               </button>
-              <button className="files-btn" onClick={handleCreateProject} title="Create Project">
+              <button className="files-btn" onClick={() => handleCreateProject()} title="Create Project">
                 + Project
               </button>
               <button className="files-btn" onClick={handleImport} title="Import file">
@@ -353,6 +388,24 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
             </div>
           </div>
 
+          {showNewProject && (
+            <div className="new-project-inline">
+              <input
+                className="new-project-input"
+                autoFocus
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleCreateProject(newProjectName.trim())
+                  if (e.key === 'Escape') { setShowNewProject(false); setNewProjectName('') }
+                }}
+                placeholder="Project name..."
+              />
+              <button className="files-btn" onClick={() => handleCreateProject(newProjectName.trim())}>Create</button>
+              <button className="files-btn secondary" onClick={() => { setShowNewProject(false); setNewProjectName('') }}>Cancel</button>
+            </div>
+          )}
+
           {loading ? (
             <div className="files-empty">Loading...</div>
           ) : files.length === 0 ? (
@@ -362,25 +415,36 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
               <span className="files-empty-sub">Drag files here or click "Import"</span>
             </div>
           ) : (
-            <div className="files-list">
-              {[...files].sort((a, b) => {
+            <div className={`files-list ${viewMode === 'grid' ? 'files-grid-view' : ''}`}>
+              {[...files].filter(f => !searchQuery || f.name.toLowerCase().includes(searchQuery.toLowerCase())).sort((a, b) => {
                 const dir = sortDir === 'asc' ? 1 : -1
                 if (a.isDirectory && !b.isDirectory) return -1
                 if (!a.isDirectory && b.isDirectory) return 1
-                
+
+                if (sortBy === 'custom' && customOrder.length > 0) {
+                  const ai = customOrder.indexOf(a.name)
+                  const bi = customOrder.indexOf(b.name)
+                  const aIdx = ai >= 0 ? ai : customOrder.length
+                  const bIdx = bi >= 0 ? bi : customOrder.length
+                  return (aIdx - bIdx) * dir
+                }
                 if (sortBy === 'name') return a.name.localeCompare(b.name) * dir
                 if (sortBy === 'size') return (a.size - b.size) * dir
                 if (sortBy === 'type') return a.type.localeCompare(b.type) * dir
                 return (new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime()) * dir
-              }).map((file) => (
+              }).map((file, fileIdx) => (
                 <div
                   key={file.name}
-                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''} ${file.isDirectory ? 'is-folder' : ''} ${dropTargetName === file.name ? 'drop-target' : ''}`}
+                  className={`file-item ${draggingFileName === file.name ? 'dragging' : ''} ${file.isDirectory ? 'is-folder' : ''} ${dropTargetName === file.name ? 'drop-target' : ''} ${dropInsertIndex === fileIdx ? 'drop-insert-before' : ''} ${dropInsertIndex === fileIdx + 1 && dropInsertIndex !== null ? 'drop-insert-after' : ''}`}
                   draggable
-                  onDragStart={() => setDraggingFileName(file.name)}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'move'
+                    setDraggingFileName(file.name)
+                  }}
                   onDragEnd={() => {
                     setDraggingFileName(null)
                     setDropTargetName(null)
+                    setDropInsertIndex(null)
                   }}
                   onDoubleClick={() => {
                     if (file.isDirectory && onOpenProject) {
@@ -394,29 +458,73 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                     setContextMenu({ file, x: e.clientX, y: e.clientY })
                   }}
                   onDragOver={(e) => {
-                    if (!file.isDirectory || !draggingFileName || draggingFileName === file.name) return
+                    if (!draggingFileName || draggingFileName === file.name) return
                     e.preventDefault()
                     e.stopPropagation()
-                    setDropTargetName(file.name)
-                  }}
-                  onDragLeave={() => {
-                    if (dropTargetName === file.name) {
+                    if (file.isDirectory) {
+                      setDropTargetName(file.name)
+                      setDropInsertIndex(null)
+                    } else {
+                      // Reorder mode: show insertion indicator
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                      const midY = rect.top + rect.height / 2
+                      const insertAt = e.clientY < midY ? fileIdx : fileIdx + 1
+                      setDropInsertIndex(insertAt)
                       setDropTargetName(null)
                     }
                   }}
+                  onDragLeave={() => {
+                    if (dropTargetName === file.name) setDropTargetName(null)
+                  }}
                   onDrop={async (e) => {
-                    if (!file.isDirectory || !draggingFileName || draggingFileName === file.name) return
+                    if (!draggingFileName || draggingFileName === file.name) return
                     e.preventDefault()
                     e.stopPropagation()
                     const sourceName = draggingFileName
                     setDraggingFileName(null)
                     setDropTargetName(null)
-                    await handleMoveIntoFolder(sourceName, file)
+                    setDropInsertIndex(null)
+
+                    if (file.isDirectory) {
+                      await handleMoveIntoFolder(sourceName, file)
+                    } else {
+                      // Reorder: build custom order from current sorted list
+                      const currentOrder = [...files].sort((a, b) => {
+                        if (a.isDirectory && !b.isDirectory) return -1
+                        if (!a.isDirectory && b.isDirectory) return 1
+                        return 0
+                      }).map(f => f.name)
+                      const fromIdx = currentOrder.indexOf(sourceName)
+                      if (fromIdx >= 0) {
+                        currentOrder.splice(fromIdx, 1)
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        const midY = rect.top + rect.height / 2
+                        const toIdx = e.clientY < midY ? currentOrder.indexOf(file.name) : currentOrder.indexOf(file.name) + 1
+                        currentOrder.splice(toIdx, 0, sourceName)
+                      }
+                      setCustomOrder(currentOrder)
+                      setSortBy('custom')
+                    }
                   }}
                 >
                   <span className="file-icon">{fileIcon(file)}</span>
                   <div className="file-info">
-                    <span className="file-name">{file.name}</span>
+                    {renameTarget === file.name ? (
+                      <input
+                        className="file-rename-input"
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={handleRenameConfirm}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRenameConfirm()
+                          if (e.key === 'Escape') { setRenameTarget(null); setRenameValue('') }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span className="file-name">{file.name}</span>
+                    )}
                     <span className="file-meta">{file.isDirectory ? 'Project Folder' : formatFileSize(file.size)}</span>
                   </div>
                   {!file.isDirectory && (
@@ -429,6 +537,13 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
                       Open Project
                     </button>
                   )}
+                  <button
+                    className="file-item-delete-btn"
+                    onClick={(e) => { e.stopPropagation(); handleDelete(file.name) }}
+                    title={`Delete "${file.name}"`}
+                  >
+                    &times;
+                  </button>
                 </div>
               ))}
             </div>
@@ -474,6 +589,107 @@ export default function WorkspacePane({ onOpenInEditor, onOpenProject, onNotify,
               <button className="danger" onClick={() => { handleDelete(contextMenu.file.name); setContextMenu(null) }}>
                 Delete
               </button>
+            </div>
+          )}
+        </div>
+      ) : activeTab === 'browse' ? (
+        <div className="workspace-pane-browse">
+          <div className="browse-header">
+            <h2>Browse PC</h2>
+            <button className="files-btn" onClick={async () => {
+              const picked = await window.electronAPI.pickWorkspaceFolder()
+              if (picked) {
+                setBrowsePath(picked)
+                setBrowseLoading(true)
+                try {
+                  const entries = await window.electronAPI.listWorkspaceFolder(picked)
+                  setBrowseEntries(entries)
+                } catch { setBrowseEntries([]) }
+                setBrowseLoading(false)
+              }
+            }}>
+              Choose Folder
+            </button>
+          </div>
+
+          {browsePath && (
+            <div className="browse-breadcrumb">
+              {browsePath.split(/[\\/]/).filter(Boolean).map((part, idx, arr) => {
+                const fullPath = arr.slice(0, idx + 1).join('\\')
+                return (
+                  <span key={idx}>
+                    <button className="browse-crumb-btn" onClick={async () => {
+                      setBrowsePath(fullPath)
+                      setBrowseLoading(true)
+                      try {
+                        const entries = await window.electronAPI.listWorkspaceFolder(fullPath)
+                        setBrowseEntries(entries)
+                      } catch { setBrowseEntries([]) }
+                      setBrowseLoading(false)
+                    }}>
+                      {part}
+                    </button>
+                    {idx < arr.length - 1 && <span className="browse-crumb-sep">/</span>}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+
+          {browseLoading ? (
+            <div className="files-empty">Loading...</div>
+          ) : !browsePath ? (
+            <div className="files-empty">
+              <span className="files-empty-icon">{'\u{1F4BB}'}</span>
+              <p>Select a folder to browse</p>
+              <span className="files-empty-sub">Click "Choose Folder" to navigate your PC</span>
+            </div>
+          ) : (
+            <div className="files-list">
+              {browseEntries.sort((a, b) => {
+                if (a.isDirectory && !b.isDirectory) return -1
+                if (!a.isDirectory && b.isDirectory) return 1
+                return a.name.localeCompare(b.name)
+              }).map(entry => (
+                <div
+                  key={entry.path}
+                  className={`file-item ${entry.isDirectory ? 'is-folder' : ''}`}
+                  onDoubleClick={async () => {
+                    if (entry.isDirectory) {
+                      setBrowsePath(entry.path)
+                      setBrowseLoading(true)
+                      try {
+                        const entries = await window.electronAPI.listWorkspaceFolder(entry.path)
+                        setBrowseEntries(entries)
+                      } catch { setBrowseEntries([]) }
+                      setBrowseLoading(false)
+                    } else if (onOpenInEditor) {
+                      onOpenInEditor({ name: entry.name, path: entry.path, size: entry.size, modifiedAt: entry.modifiedAt, type: entry.name.split('.').pop() || 'unknown', isDirectory: false })
+                    }
+                  }}
+                >
+                  <span className="file-icon">{entry.isDirectory ? '\u{1F4C1}' : '\u{1F4C4}'}</span>
+                  <div className="file-info">
+                    <span className="file-name">{entry.name}</span>
+                    <span className="file-meta">{entry.isDirectory ? 'Folder' : formatFileSize(entry.size)}</span>
+                  </div>
+                  {!entry.isDirectory && (
+                    <button className="file-open-code-btn" onClick={async () => {
+                      const imported = await window.electronAPI.importFileByPath(entry.path)
+                      if (imported) {
+                        onNotify?.(`Added "${entry.name}" to Library.`, 'success')
+                      }
+                    }} title="Add to Library">
+                      + Library
+                    </button>
+                  )}
+                  {entry.isDirectory && (
+                    <button className="file-open-code-btn" onClick={() => onOpenProject?.(entry.path)} title="Open as Project">
+                      Open
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>

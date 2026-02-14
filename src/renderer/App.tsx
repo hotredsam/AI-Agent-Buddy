@@ -6,15 +6,18 @@ import ChatPane from './components/ChatPane'
 import Composer from './components/Composer'
 import SettingsPane from './components/SettingsPane'
 import WorkspacePane from './components/WorkspacePane'
-import EditorPane, { type EditorTab } from './components/EditorPane'
+import EditorPane, { type EditorTab, type EditorActions } from './components/EditorPane'
 import TerminalPane from './components/TerminalPane'
 import FileExplorerPane from './components/FileExplorerPane'
 import CodeMenuBar from './components/CodeMenuBar'
 import AIPane from './components/AIPane'
+import CommandPalette from './components/CommandPalette'
+import ErrorBoundary from './components/ErrorBoundary'
 import Toast, { type ToastMessage } from './components/Toast'
-import { applyTheme, THEMES } from './themes'
+import { applyTheme, THEMES, BASE_THEME_NAMES } from './themes'
+import { shortcutManager, DEFAULT_SHORTCUTS } from './shortcuts'
 
-type View = 'chat' | 'settings' | 'workspace' | 'code'
+type View = 'chat' | 'settings' | 'workspace' | 'code' | 'modules'
 
 const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
@@ -28,9 +31,21 @@ const DEFAULT_SETTINGS: Settings = {
     allowFileWrite: true,
     allowAICodeExec: false,
   },
+  agentSafety: {
+    maxActions: 120,
+    maxFileWrites: 80,
+    maxCommands: 24,
+    maxBytesWritten: 1_000_000,
+    maxContractViolations: 12,
+    maxCommandTimeoutMs: 120_000,
+    commandKillGraceMs: 2_000,
+    maxViolationRetriesPerStep: 2,
+  },
   activeProvider: 'ollama',
   codingProvider: 'ollama',
   imageProvider: 'ollama',
+  llamacppEndpoint: 'http://127.0.0.1:8080',
+  llamacppModelName: 'qwen3-coder-30b',
   systemPrompts: {
     chat: 'You are a helpful AI assistant. Provide clear and direct answers.',
     coding: 'You are a senior software engineer. Return practical, correct code with minimal fluff.',
@@ -97,6 +112,9 @@ export default function App() {
   const [recentFiles, setRecentFiles] = useState<string[]>([])
   const [showExplorer, setShowExplorer] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
+  const [editorActions, setEditorActions] = useState<EditorActions | null>(null)
+  const [showCommandPalette, setShowCommandPalette] = useState(false)
+  const [showShortcutsPanel, setShowShortcutsPanel] = useState(false)
   const [providerConnectionStatus, setProviderConnectionStatus] = useState<'Connected' | 'Offline'>('Connected')
   const [codingModelOptions, setCodingModelOptions] = useState<string[]>([])
 
@@ -168,7 +186,19 @@ export default function App() {
         ])
         setConversations(convos)
         setSettings(sett)
-        applyTheme((sett.theme as ThemeName) || 'glass')
+        applyTheme((sett.theme as ThemeName) || 'glass', sett.darkMode !== false)
+
+        // Restore session state
+        try {
+          const session = await window.electronAPI.getSessionState()
+          if (session.view) setView(session.view as View)
+          if (session.sidebarCollapsed) setSidebarCollapsed(session.sidebarCollapsed)
+          if (session.workspaceRootPath) {
+            setWorkspaceRootPath(session.workspaceRootPath)
+            setShowExplorer(true)
+          }
+          if (session.showTerminal !== undefined) setShowTerminal(session.showTerminal)
+        } catch { /* ignore session restore errors */ }
 
         if (convos.length > 0) {
           setActiveConversationId(convos[0].id)
@@ -197,6 +227,17 @@ export default function App() {
     }
     init()
   }, [addToast])
+
+  useEffect(() => {
+    if (!window.electronAPI?.setSessionState) return
+    window.electronAPI.setSessionState({
+      view,
+      sidebarCollapsed,
+      workspaceRootPath,
+      showExplorer,
+      showTerminal,
+    }).catch(() => {})
+  }, [view, sidebarCollapsed, workspaceRootPath, showExplorer, showTerminal])
 
   useEffect(() => {
     if (!window.electronAPI || !activeConversationId) {
@@ -359,6 +400,8 @@ export default function App() {
   const handleOpenProject = useCallback((projectPath: string) => {
     setWorkspaceRootPath(projectPath)
     setShowExplorer(true)
+    setEditorTabs([])
+    setActiveTabId(null)
     setRecentWorkspacePaths((prev) => [projectPath, ...prev.filter((p) => p !== projectPath)].slice(0, 10))
     addToast(`Workspace opened: ${projectPath}`, 'success')
     setView('code')
@@ -597,7 +640,7 @@ export default function App() {
     try {
       await window.electronAPI.setSettings(newSettings)
       setSettings(newSettings)
-      applyTheme((newSettings.theme as ThemeName) || 'glass')
+      applyTheme((newSettings.theme as ThemeName) || 'glass', newSettings.darkMode !== false)
     } catch (err: any) {
       addToast('Failed to save settings: ' + err.message)
     }
@@ -611,44 +654,116 @@ export default function App() {
     setSidebarCollapsed((prev) => !prev)
   }, [])
 
+  // ── Centralized keyboard shortcut manager ──
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-        e.preventDefault()
-        handleNewChat()
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
-        e.preventDefault()
-        setView('settings')
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === '1') {
-        e.preventDefault()
-        setView('chat')
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === '2') {
-        e.preventDefault()
-        setView('code')
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === '3') {
-        e.preventDefault()
-        setView('workspace')
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
-        e.preventDefault()
-        setSidebarCollapsed((prev) => !prev)
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
-        e.preventDefault()
-        handleOpenFile()
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
-        e.preventDefault()
-        handleOpenFile()
-      }
+    const mgr = shortcutManager
+
+    // Cycle through available themes
+    const cycleTheme = () => {
+      setSettings((prev) => {
+        const idx = BASE_THEME_NAMES.indexOf(prev.theme as ThemeName)
+        const next = BASE_THEME_NAMES[(idx + 1) % BASE_THEME_NAMES.length]
+        const updated = { ...prev, theme: next }
+        applyTheme(next, prev.darkMode !== false)
+        window.electronAPI?.setSettings(updated).catch(() => {})
+        return updated
+      })
     }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleNewChat, handleOpenFile])
+
+    // Register all default shortcuts with their handlers
+    mgr.register('Ctrl+B', 'toggle-sidebar', () => setSidebarCollapsed((p) => !p), 'Toggle Sidebar')
+    mgr.register('Ctrl+N', 'new-conversation', () => handleNewChat(), 'New Conversation')
+    mgr.register('Ctrl+Shift+T', 'toggle-theme', cycleTheme, 'Cycle Theme')
+    mgr.register('Ctrl+Shift+P', 'command-palette', () => setShowShortcutsPanel((p) => !p), 'Command Palette')
+    mgr.register('Ctrl+L', 'focus-chat', () => {
+      setView('chat')
+      // After switching to chat view, focus the composer textarea
+      setTimeout(() => {
+        const textarea = document.querySelector<HTMLTextAreaElement>('.composer-textarea, .composer textarea')
+        textarea?.focus()
+      }, 50)
+    }, 'Focus Chat Input')
+    mgr.register('Ctrl+`', 'toggle-terminal', () => setShowTerminal((p) => !p), 'Toggle Terminal')
+    mgr.register('Ctrl+E', 'toggle-explorer', () => setShowExplorer((p) => !p), 'Toggle File Explorer')
+    mgr.register('Ctrl+1', 'switch-to-chat', () => setView('chat'), 'Switch to Chat View')
+    mgr.register('Ctrl+2', 'switch-to-code', () => setView('code'), 'Switch to Code View')
+    mgr.register('Ctrl+3', 'switch-to-agents', () => setView('workspace'), 'Switch to Agents View')
+
+    // Keep the previous Ctrl+, for settings and Ctrl+O for open file
+    mgr.register('Ctrl+,', 'open-settings', () => setView('settings'), 'Open Settings')
+    mgr.register('Ctrl+O', 'open-file', () => handleOpenFile(), 'Open File')
+    mgr.register('Ctrl+P', 'quick-open', () => setShowCommandPalette((p) => !p), 'Quick Open')
+
+    // New shortcuts (Phase 6.2)
+    mgr.register('Ctrl+W', 'close-tab', () => {
+      setEditorTabs((prev) => {
+        if (prev.length === 0) return prev
+        setActiveTabId((curId) => {
+          const idx = prev.findIndex((t) => t.id === curId)
+          const next = prev.filter((t) => t.id !== curId)
+          const fallback = next[idx] || next[idx - 1] || null
+          return fallback?.id || null
+        })
+        return prev.filter((t) => t.id !== activeTabId)
+      })
+    }, 'Close Current Tab')
+
+    mgr.register('Ctrl+Shift+N', 'new-project', async () => {
+      const name = prompt('New project name:')
+      if (!name?.trim()) return
+      try {
+        const result = await window.electronAPI.createProject(name.trim())
+        if (result?.path) {
+          setWorkspaceRootPath(result.path)
+          setShowExplorer(true)
+          setView('code')
+        }
+      } catch { /* ignore */ }
+    }, 'New Project')
+
+    mgr.register('Ctrl+Shift+E', 'focus-explorer', () => {
+      setShowExplorer(true)
+      setView('code')
+    }, 'Focus Explorer')
+
+    mgr.register('Ctrl+Shift+B', 'toggle-ai-pane', () => {
+      // Toggle the AI pane collapsed state via DOM class
+      const aiPane = document.querySelector('.ai-pane')
+      if (aiPane) aiPane.classList.toggle('collapsed')
+    }, 'Toggle AI Pane')
+
+    mgr.register('Ctrl+K', 'clear-chat', () => {
+      setMessages([])
+    }, 'Clear Chat')
+
+    mgr.register('F5', 'refresh-connection', async () => {
+      try {
+        const diag = await window.electronAPI.runDiagnostics()
+        setProviderConnectionStatus(diag.serverReachable ? 'Connected' : 'Offline')
+        const localModels = await window.electronAPI.listModels()
+        setCodingModelOptions(localModels)
+      } catch { /* ignore */ }
+    }, 'Refresh Connection')
+
+    mgr.register('Ctrl+Shift+D', 'run-diagnostics', async () => {
+      try {
+        const diag = await window.electronAPI.runDiagnostics()
+        const stats = await window.electronAPI.getSystemStats()
+        alert(
+          `Diagnostics:\n\nServer: ${diag.serverReachable ? 'Connected' : 'Offline'}` +
+          `\nModels: ${diag.models?.join(', ') || 'None found'}` +
+          `\nRAM: ${stats?.usedMemMB ?? '?'}MB / ${stats?.totalMemMB ?? '?'}MB` +
+          `\nCPUs: ${stats?.cpuCount ?? '?'}`
+        )
+      } catch { /* ignore */ }
+    }, 'Run Diagnostics')
+
+    mgr.start()
+
+    return () => {
+      mgr.destroy()
+    }
+  }, [handleNewChat, handleOpenFile, activeTabId])
 
   const currentTheme = THEMES[settings.theme as ThemeName] || THEMES.glass
   const agentEmoji = currentTheme.agentEmoji || '\u{1F916}'
@@ -695,19 +810,20 @@ export default function App() {
 
         <div className="main-content">
           {view === 'chat' && (
-            <>
+            <ErrorBoundary>
               <ChatPane
                 messages={messages}
                 streamingText={streamingText}
                 isStreaming={isStreaming}
                 requestState={chatRequestState}
                 contextInfo={contextInfo}
-                modelName={settings.modelName}
+                modelName={(settings.activeProvider === 'llamacpp') ? (settings.llamacppModelName || settings.modelName) : settings.modelName}
                 providerName={settings.activeProvider || 'ollama'}
                 providerStatus={providerConnectionStatus}
                 fallbackPolicy={(settings.activeProvider || 'ollama') === 'ollama' ? 'Auto' : 'None'}
                 defaultCtx={settings.numCtx}
                 agentEmoji={agentEmoji}
+                profilePicture={settings.profilePicture}
                 onSendToEditor={(code) => {
                   if (activeTabId) {
                     setEditorTabs((prev) => prev.map((tab) => (
@@ -722,6 +838,7 @@ export default function App() {
                 }}
                 onRunInTerminal={() => {
                   setView('code')
+                  setShowTerminal(true)
                 }}
                 onSaveAsFile={handleSaveCodeBlockAsFile}
                 onCodeFileAction={handleCodeFileAction}
@@ -732,21 +849,67 @@ export default function App() {
                 isStreaming={isStreaming}
                 onCancel={handleCancelMessage}
               />
-            </>
+            </ErrorBoundary>
           )}
 
-          {view === 'settings' && <SettingsPane settings={settings} onSave={handleSaveSettings} />}
+          {view === 'settings' && <ErrorBoundary><SettingsPane settings={settings} onSave={handleSaveSettings} /></ErrorBoundary>}
 
           {view === 'workspace' && (
-            <WorkspacePane
-              onOpenInEditor={handleOpenInEditor}
-              onOpenProject={handleOpenProject}
-              onNotify={addToast}
-              onDownloaded={addDownload}
-            />
+            <ErrorBoundary>
+              <WorkspacePane
+                onOpenInEditor={handleOpenInEditor}
+                onOpenProject={handleOpenProject}
+                onNotify={addToast}
+                onDownloaded={addDownload}
+              />
+            </ErrorBoundary>
+          )}
+
+          {view === 'modules' && (
+            <ErrorBoundary>
+            <div className="modules-pane">
+              <div className="modules-content">
+                <svg className="modules-icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7" rx="1" />
+                  <rect x="14" y="3" width="7" height="7" rx="1" />
+                  <rect x="3" y="14" width="7" height="7" rx="1" />
+                  <rect x="14" y="14" width="7" height="7" rx="1" />
+                </svg>
+                <h2>App Store</h2>
+                <p className="modules-subtitle">Install apps that extend your AI Agent IDE</p>
+                <p className="modules-desc">Apps connect to the IDE through our <strong>Sockets</strong> system, giving them access to AI capabilities, file management, and terminal access.</p>
+
+                <div className="modules-app-grid">
+                  <div className="module-app-card">
+                    <div className="module-app-icon">{'\u{1F4DA}'}</div>
+                    <h3>CPA Study Assistant</h3>
+                    <p>Study for CPA exams with AI-powered quizzes and practice problems</p>
+                    <span className="modules-badge">Coming Soon</span>
+                  </div>
+                  <div className="module-app-card">
+                    <div className="module-app-icon">{'\u{1F4CA}'}</div>
+                    <h3>Excel Data Visualizer</h3>
+                    <p>Analyze and visualize spreadsheet data with AI-generated charts</p>
+                    <span className="modules-badge">Coming Soon</span>
+                  </div>
+                  <div className="module-app-card">
+                    <div className="module-app-icon">{'\u{1F4B0}'}</div>
+                    <h3>Budget Analyzer</h3>
+                    <p>Monthly budget analysis, insights, and financial planning with AI</p>
+                    <span className="modules-badge">Coming Soon</span>
+                  </div>
+                </div>
+
+                <div className="modules-sockets-note">
+                  <strong>Sockets API</strong> is currently in development. Build your own apps that integrate with the IDE's AI, file system, and terminal.
+                </div>
+              </div>
+            </div>
+            </ErrorBoundary>
           )}
 
           {view === 'code' && (
+            <ErrorBoundary>
             <div className="code-layout">
               <CodeMenuBar
                 showExplorer={showExplorer}
@@ -786,6 +949,7 @@ export default function App() {
                       onOpenRecent={handleOpenRecentFolder}
                       recentFiles={recentFiles}
                       onOpenRecentFile={handleOpenPathInEditor}
+                      onEditorReady={setEditorActions}
                     />
                   </div>
                   {showTerminal && (
@@ -800,15 +964,48 @@ export default function App() {
                   workspaceRootPath={workspaceRootPath}
                   onWorkspaceRootPathChange={setWorkspaceRootPath}
                   activeFileContent={activeTab?.content || ''}
+                  openTabs={editorTabs.map((t) => ({ id: t.id, name: t.name, content: t.content, filePath: t.filePath }))}
                   onSaveSettings={handleSaveSettings}
                   onApplyToEditor={handleApplyAIToEditor}
+                  onInsertAtCursor={editorActions?.insertAtCursor || null}
                   onNotify={addToast}
                 />
               </div>
             </div>
+            </ErrorBoundary>
           )}
         </div>
 
+        <CommandPalette
+          visible={showCommandPalette}
+          onClose={() => setShowCommandPalette(false)}
+          onSelectFile={(filePath) => {
+            handleOpenPathInEditor(filePath)
+            setShowCommandPalette(false)
+          }}
+          workspaceRootPath={workspaceRootPath}
+        />
+
+        {showShortcutsPanel && (
+          <div className="shortcuts-panel-overlay" onClick={() => setShowShortcutsPanel(false)}>
+            <div className="shortcuts-panel" onClick={(e) => e.stopPropagation()}>
+              <div className="shortcuts-panel-header">
+                <h2>Keyboard Shortcuts</h2>
+                <button className="shortcuts-panel-close" onClick={() => setShowShortcutsPanel(false)}>
+                  &#x2715;
+                </button>
+              </div>
+              <div className="shortcuts-panel-list">
+                {shortcutManager.getAll().map((s) => (
+                  <div key={s.id} className="shortcuts-panel-row">
+                    <span className="shortcuts-panel-label">{s.label}</span>
+                    <kbd className="shortcuts-panel-keys">{s.keys}</kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         <Toast toasts={toasts} onDismiss={dismissToast} />
         {downloads.length > 0 && (
           <div className="download-shelf">

@@ -1,5 +1,6 @@
-import React, { useMemo, useEffect, useCallback, useState } from 'react'
+import React, { useMemo, useEffect, useCallback, useState, useRef } from 'react'
 import Editor, { loader } from '@monaco-editor/react'
+import type * as monaco from 'monaco-editor'
 
 export interface EditorTab {
   id: string
@@ -8,6 +9,14 @@ export interface EditorTab {
   content: string
   language: string
   savedContent: string
+}
+
+export interface EditorActions {
+  insertAtCursor: (text: string) => void
+  replaceSelection: (text: string) => void
+  getSelection: () => string
+  getCursorPosition: () => { line: number; column: number }
+  getFullContent: () => string
 }
 
 interface EditorPaneProps {
@@ -24,6 +33,7 @@ interface EditorPaneProps {
   onOpenRecent?: () => void
   recentFiles?: string[]
   onOpenRecentFile?: (path: string) => void
+  onEditorReady?: (actions: EditorActions) => void
 }
 
 const MONACO_LANG_MAP: Record<string, string> = {
@@ -93,9 +103,12 @@ export default function EditorPane({
   onOpenRecent,
   recentFiles = [],
   onOpenRecentFile,
+  onEditorReady,
 }: EditorPaneProps) {
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+
   useEffect(() => {
     ensureMonacoTheme()
   }, [])
@@ -295,10 +308,45 @@ export default function EditorPane({
             insertSpaces: true,
             renderWhitespace: 'selection',
           }}
-          onMount={(editor, monaco) => {
-            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+          onMount={(editor, monacoInstance) => {
+            editorRef.current = editor
+            editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
               handleSave()
             })
+            if (onEditorReady) {
+              onEditorReady({
+                insertAtCursor: (text: string) => {
+                  const position = editor.getPosition()
+                  if (!position) return
+                  editor.executeEdits('ai-inject', [{
+                    range: new monacoInstance.Range(position.lineNumber, position.column, position.lineNumber, position.column),
+                    text,
+                    forceMoveMarkers: true,
+                  }])
+                },
+                replaceSelection: (text: string) => {
+                  const selection = editor.getSelection()
+                  if (!selection) return
+                  editor.executeEdits('ai-inject', [{
+                    range: selection,
+                    text,
+                    forceMoveMarkers: true,
+                  }])
+                },
+                getSelection: () => {
+                  const selection = editor.getSelection()
+                  if (!selection) return ''
+                  return editor.getModel()?.getValueInRange(selection) || ''
+                },
+                getCursorPosition: () => {
+                  const pos = editor.getPosition()
+                  return { line: pos?.lineNumber || 1, column: pos?.column || 1 }
+                },
+                getFullContent: () => {
+                  return editor.getModel()?.getValue() || ''
+                },
+              })
+            }
           }}
         />
       </div>

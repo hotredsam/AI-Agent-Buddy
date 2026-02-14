@@ -53,7 +53,15 @@ export default function CodeMenuBar({
       { label: 'Paste', action: () => document.execCommand('paste') },
     ],
     Selection: [
-      { label: 'Select All (Ctrl+A)', action: () => document.execCommand('selectAll') },
+      { label: 'Select All (Ctrl+A)', action: () => {
+        const editor = document.querySelector('.monaco-editor textarea') as HTMLTextAreaElement | null
+        if (editor) {
+          editor.focus()
+          document.execCommand('selectAll')
+        } else {
+          document.execCommand('selectAll')
+        }
+      }},
     ],
     View: [
       { label: showExplorer ? 'Hide Explorer' : 'Show Explorer', action: onToggleExplorer },
@@ -119,9 +127,7 @@ export default function CodeMenuBar({
           </div>
         ))}
       </div>
-      <div className="code-menubar-right">
-        <span className="coding-ai-status">AI controls moved to the right pane.</span>
-      </div>
+      <div className="code-menubar-right" />
     </div>
   )
 }

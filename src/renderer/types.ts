@@ -15,7 +15,7 @@ export interface Message {
   createdAt: string
 }
 
-export type ThemeName = 'glass' | 'forest' | 'ocean' | 'ember' | 'midnight' | 'slate' | 'sand' | 'rose' | 'cyber' | 'classic'
+export type ThemeName = 'glass' | 'forest' | 'ocean' | 'ember' | 'midnight' | 'slate' | 'sand' | 'rose' | 'cyber' | 'classic' | 'light' | 'light-ocean' | 'light-rose'
 
 export interface Settings {
   ollamaEndpoint: string
@@ -30,9 +30,23 @@ export interface Settings {
     allowFileWrite: boolean
     allowAICodeExec: boolean
   }
-  activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
-  codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
-  imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+  agentSafety?: {
+    maxActions: number
+    maxFileWrites: number
+    maxCommands: number
+    maxBytesWritten: number
+    maxContractViolations: number
+    maxCommandTimeoutMs: number
+    commandKillGraceMs: number
+    maxViolationRetriesPerStep: number
+  }
+  activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
+  codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
+  imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
+  llamacppEndpoint?: string
+  llamacppModelName?: string
+  llamacppBinaryPath?: string
+  llamacppModelPath?: string
   systemPrompts?: {
     chat: string
     coding: string
@@ -41,6 +55,8 @@ export interface Settings {
     bugfix: string
     image: string
   }
+  profilePicture?: string
+  darkMode?: boolean
 }
 
 export interface UserFile {
@@ -70,16 +86,40 @@ export interface TerminalShellOption {
   available: boolean
 }
 
+export type RuntimeRequestKind = 'chat' | 'coding' | 'plan' | 'build' | 'bugfix' | 'image'
+export type RuntimeRequestPhase = 'preparing' | 'requesting' | 'streaming' | 'processing'
+export type RuntimeRequestOutcome = 'completed' | 'failed' | 'cancelled'
+
+export interface RuntimeActiveRequest {
+  id: string
+  provider: string
+  model: string
+  kind: RuntimeRequestKind
+  phase: RuntimeRequestPhase
+  startedAt: string
+  phaseUpdatedAt: string
+  elapsedMs: number
+}
+
+export interface RuntimeRecentRequest {
+  id: string
+  provider: string
+  model: string
+  kind: RuntimeRequestKind
+  startedAt: string
+  endedAt: string
+  durationMs: number
+  outcome: RuntimeRequestOutcome
+  finalPhase: RuntimeRequestPhase
+  error?: string
+}
+
 export interface RuntimeDiagnostics {
+  snapshotAt: string
   activeModels: string[]
   activeRequestCount: number
-  activeRequests: Array<{
-    id: string
-    provider: string
-    model: string
-    kind: 'chat' | 'coding' | 'plan' | 'build' | 'bugfix' | 'image'
-    startedAt: string
-  }>
+  activeRequests: RuntimeActiveRequest[]
+  recentRequests: RuntimeRecentRequest[]
   imageModelLoaded: boolean
   lastUnloadAt: string | null
 }
@@ -101,6 +141,23 @@ export interface AgentLogEntry {
   message: string
 }
 
+export type AgentDiffKind = 'add' | 'remove' | 'context'
+
+export interface AgentDiffLine {
+  kind: AgentDiffKind
+  text: string
+  oldLine?: number
+  newLine?: number
+}
+
+export interface AgentDiffPreview {
+  lines: AgentDiffLine[]
+  added: number
+  removed: number
+  truncated: boolean
+  hiddenLineCount: number
+}
+
 export interface AgentFileWrite {
   id: string
   timestamp: string
@@ -109,6 +166,7 @@ export interface AgentFileWrite {
   bytesAfter: number
   bytesChanged: number
   preview: string
+  diff?: AgentDiffPreview
 }
 
 export interface AgentTestRun {
@@ -167,6 +225,7 @@ export interface AgentEvent {
     | 'task_completed'
     | 'task_failed'
     | 'task_cancelled'
+    | 'contract_violation'
     | 'log'
   message?: string
   data?: Record<string, any>
@@ -184,10 +243,19 @@ export interface ElectronAPI {
   cancelMessage: (conversationId: string) => Promise<boolean>
   getSettings: () => Promise<Settings>
   setSettings: (settings: Partial<Settings>) => Promise<void>
+  getSessionState: () => Promise<{ view: string; sidebarCollapsed: boolean; workspaceRootPath: string | null; showExplorer: boolean; showTerminal: boolean }>
+  setSessionState: (state: Partial<{ view: string; sidebarCollapsed: boolean; workspaceRootPath: string | null; showExplorer: boolean; showTerminal: boolean }>) => Promise<void>
   checkHealth: () => Promise<boolean>
   listModels: () => Promise<string[]>
   listImageModels: () => Promise<string[]>
   pullModel: (modelName: string) => Promise<boolean>
+  checkLlamaCppHealth: () => Promise<boolean>
+  listLlamaCppModels: () => Promise<string[]>
+  launchLlamaCpp: () => Promise<boolean>
+  pickLlamaCppBinary: () => Promise<string | null>
+  pickLlamaCppModel: () => Promise<string | null>
+  createWorkspaceFileFromAI: (destFolder: string, fileName: string, content: string) => Promise<boolean>
+  importFileToWorkspace: (sourcePath: string, destFolder: string) => Promise<boolean>
   runDiagnostics: () => Promise<{
     serverReachable: boolean
     availableModels: string[]
@@ -235,6 +303,7 @@ export interface ElectronAPI {
   testClearAgentTasks: () => Promise<boolean>
   onAgentUpdate: (callback: (tasks: AgentTask[]) => void) => () => void
   onAgentEvent: (callback: (event: AgentEvent) => void) => () => void
+  onAgentTerminalOutput: (callback: (data: { text: string; stream: string }) => void) => () => void
 
   getSystemStats: () => Promise<{ freeMem: number; totalMem: number; platform: string; cpus: number }>
   getRuntimeDiagnostics: () => Promise<RuntimeDiagnostics>
@@ -255,6 +324,7 @@ export interface ElectronAPI {
   terminalExecute: (command: string, cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>
   terminalGetCwd: () => Promise<string>
   readFile: (filePath: string) => Promise<string | null>
+  readFileForChat: (filePath: string) => Promise<{ content: string; type: 'text' | 'image' | 'binary' }>
   writeFile: (filePath: string, content: string) => Promise<boolean>
   generateCode: (payload: {
     prompt: string
@@ -265,7 +335,7 @@ export interface ElectronAPI {
   }) => Promise<{ text: string | null; error?: string }>
   generateImage: (payload: {
     prompt: string
-    provider?: Settings['activeProvider']
+    provider?: Settings['activeProvider'] | 'llamacpp'
     model?: string
   }) => Promise<{ filePath: string | null; error?: string }>
   generateCheckpoint: () => Promise<string>

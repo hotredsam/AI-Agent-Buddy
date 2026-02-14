@@ -30,6 +30,7 @@ export default function FileExplorerPane({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [entries, setEntries] = useState<Record<string, WorkspaceEntry[]>>({})
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
 
   useEffect(() => {
     const close = () => setOpenMenuPath(null)
@@ -219,13 +220,91 @@ export default function FileExplorerPane({
     deletePath,
   ])
 
+  // Auto-expand root folder when rootPath changes (e.g. opening a project from Files tab)
+  useEffect(() => {
+    if (rootPath && !expanded[rootPath]) {
+      loadFolder(rootPath)
+      setExpanded((prev) => ({ ...prev, [rootPath]: true }))
+    }
+  }, [rootPath]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const rootDisplay = useMemo(() => folderName(rootPath), [rootPath])
 
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const droppedFiles = e.dataTransfer.files
+    if (!droppedFiles || droppedFiles.length === 0) return
+
+    // If a single folder is dropped and no root is set, open it as workspace root
+    const firstFile = droppedFiles[0]
+    const firstPath = (firstFile as any).path as string | undefined
+    if (droppedFiles.length === 1 && firstPath) {
+      // Check if it's a directory by trying to open it
+      if (!rootPath) {
+        // Try to use it as workspace root
+        onRootPathChange(firstPath)
+        await loadFolder(firstPath)
+        setExpanded({ [firstPath]: true })
+        onNotify?.(`Opened folder: ${baseName(firstPath)}`, 'success')
+        return
+      }
+    }
+
+    // Copy files into workspace root
+    if (!rootPath) {
+      onNotify?.('Open a folder first, then drag files into it.')
+      return
+    }
+
+    let imported = 0
+    for (let i = 0; i < droppedFiles.length; i++) {
+      const file = droppedFiles[i]
+      const filePath = (file as any).path as string | undefined
+      if (filePath) {
+        const ok = await window.electronAPI.importFileToWorkspace(filePath, rootPath)
+        if (ok) { imported++; continue }
+      }
+      // Fallback: read file content via browser API and create in workspace
+      try {
+        const text = await file.text()
+        const ok = await window.electronAPI.createWorkspaceFileFromAI(rootPath, file.name, text)
+        if (ok) imported++
+      } catch { /* skip unreadable files */ }
+    }
+    if (imported > 0) {
+      await loadFolder(rootPath)
+      onNotify?.(`Imported ${imported} file${imported > 1 ? 's' : ''} into workspace.`, 'success')
+    } else {
+      onNotify?.('No files could be imported. Try opening a folder first.', 'warning')
+    }
+  }, [rootPath, onRootPathChange, loadFolder, onNotify])
+
   return (
-    <div className="explorer-pane">
+    <div
+      className={`explorer-pane ${dragOver ? 'explorer-drag-over' : ''}`}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+    >
       <div className="explorer-header">
         <span className="explorer-title">Explorer</span>
-        <button className="explorer-open-btn" onClick={handleOpenFolder}>Open Folder</button>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className="explorer-open-btn" onClick={handleOpenFolder}>Open Folder</button>
+          {rootPath && (
+            <button
+              className="explorer-open-btn"
+              onClick={() => {
+                onRootPathChange(null)
+                setExpanded({})
+                setEntries({})
+              }}
+              title="Close Folder"
+            >
+              {'\u2715'}
+            </button>
+          )}
+        </div>
       </div>
 
       {!rootPath ? (

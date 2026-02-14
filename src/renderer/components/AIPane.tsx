@@ -1,13 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AgentDiffLine,
   AgentEvent,
   AgentMode,
   AgentTask,
   RuntimeDiagnostics,
   Settings,
 } from '../types'
+import { isDiff, applyUnifiedDiff } from '../utils/patchApply'
 
 type PaneState = 'idle' | 'thinking' | 'writing' | 'testing' | 'done' | 'error'
+
+interface OpenTab {
+  id: string
+  name: string
+  content: string
+  filePath: string | null
+}
 
 interface AIPaneProps {
   settings: Settings
@@ -15,8 +24,10 @@ interface AIPaneProps {
   workspaceRootPath: string | null
   onWorkspaceRootPathChange?: (path: string) => void
   activeFileContent: string
+  openTabs?: OpenTab[]
   onSaveSettings: (next: Settings) => void
   onApplyToEditor: (content: string) => void
+  onInsertAtCursor?: ((text: string) => void) | null
   onNotify?: (text: string, type?: 'error' | 'warning' | 'success') => void
 }
 
@@ -27,9 +38,55 @@ interface CodingResponse {
   createdAt: string
 }
 
+const COLLAPSED_DIFF_LINES = 6
+const LOG_FOLLOW_THRESHOLD_PX = 24
+const MAX_VISIBLE_LOGS = 400
+
 function formatTime(iso: string): string {
   const date = new Date(iso)
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleTimeString()
+}
+
+function formatDurationMs(duration: number): string {
+  if (!Number.isFinite(duration) || duration < 0) return '--'
+  if (duration < 1000) return `${Math.round(duration)}ms`
+  const seconds = duration / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+}
+
+function truncateMiddle(text: string, max = 52): string {
+  if (!text || text.length <= max) return text
+  const left = Math.ceil((max - 3) / 2)
+  const right = Math.floor((max - 3) / 2)
+  return `${text.slice(0, left)}...${text.slice(text.length - right)}`
+}
+
+function lineKindClass(kind: AgentDiffLine['kind']): string {
+  if (kind === 'add') return 'add'
+  if (kind === 'remove') return 'remove'
+  return 'context'
+}
+
+function fallbackDiffLines(preview: string): AgentDiffLine[] {
+  if (!preview) return []
+  return preview
+    .split(/\r?\n/)
+    .map((line): AgentDiffLine | null => {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed === '...') return null
+      const match = trimmed.match(/^L(\d+)\s+([+\- ])\s?(.*)$/)
+      if (!match) {
+        return { kind: 'context', text: trimmed }
+      }
+      const lineNo = Number(match[1]) || undefined
+      const marker = match[2]
+      const text = match[3] || ''
+      if (marker === '+') return { kind: 'add', text, newLine: lineNo }
+      if (marker === '-') return { kind: 'remove', text, oldLine: lineNo }
+      return { kind: 'context', text, oldLine: lineNo, newLine: lineNo }
+    })
+    .filter((line): line is AgentDiffLine => !!line)
 }
 
 function paneStateLabel(state: PaneState): string {
@@ -72,8 +129,10 @@ export default function AIPane({
   workspaceRootPath,
   onWorkspaceRootPathChange,
   activeFileContent,
+  openTabs = [],
   onSaveSettings,
   onApplyToEditor,
+  onInsertAtCursor,
   onNotify,
 }: AIPaneProps) {
   const [collapsed, setCollapsed] = useState(false)
@@ -85,9 +144,15 @@ export default function AIPane({
   const [tasks, setTasks] = useState<AgentTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [codingResponses, setCodingResponses] = useState<CodingResponse[]>([])
+  const [insertMode, setInsertMode] = useState<'replace' | 'cursor'>('replace')
+  const [includeAllTabs, setIncludeAllTabs] = useState(false)
   const [expandedReasoningIds, setExpandedReasoningIds] = useState<Record<string, boolean>>({})
+  const [expandedWriteIds, setExpandedWriteIds] = useState<Record<string, boolean>>({})
+  const [followLogs, setFollowLogs] = useState(true)
+  const [runtimeTick, setRuntimeTick] = useState(0)
   const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnostics | null>(null)
   const paneRef = useRef<HTMLElement | null>(null)
+  const logsRef = useRef<HTMLDivElement | null>(null)
 
   const provider = (settings.codingProvider || settings.activeProvider || 'ollama') as NonNullable<Settings['activeProvider']>
   const model = settings.codingModel || settings.modelName
@@ -123,6 +188,8 @@ export default function AIPane({
       if (event.type === 'planning_started' || event.type === 'task_created') {
         setPaneState('thinking')
       } else if (event.type === 'build_started' || event.type === 'step_started' || event.type === 'file_written') {
+        setPaneState('writing')
+      } else if (event.type === 'contract_violation') {
         setPaneState('writing')
       } else if (event.type === 'testing_started' || event.type === 'test_command_start' || event.type === 'test_output') {
         setPaneState('testing')
@@ -161,6 +228,14 @@ export default function AIPane({
   }, [])
 
   useEffect(() => {
+    if (!runtimeDiagnostics || runtimeDiagnostics.activeRequestCount === 0) return
+    const timer = window.setInterval(() => {
+      setRuntimeTick((value) => value + 1)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [runtimeDiagnostics?.activeRequestCount])
+
+  useEffect(() => {
     refreshLayout()
   }, [collapsed, refreshLayout])
 
@@ -186,6 +261,11 @@ export default function AIPane({
   }, [activeTaskId, tasks])
 
   useEffect(() => {
+    if (!activeTask || !followLogs || !logsRef.current) return
+    logsRef.current.scrollTop = logsRef.current.scrollHeight
+  }, [activeTask?.id, activeTask?.logs.length, followLogs])
+
+  useEffect(() => {
     if (!activeTask) return
     if (activeTask.phase === 'thinking') setPaneState('thinking')
     else if (activeTask.phase === 'writing') setPaneState('writing')
@@ -198,6 +278,25 @@ export default function AIPane({
     }
   }, [activeTask])
 
+  const liveNow = useMemo(() => Date.now(), [runtimeTick, runtimeDiagnostics?.snapshotAt])
+
+  const handleLogScroll = useCallback(() => {
+    const node = logsRef.current
+    if (!node) return
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight
+    const atBottom = distanceFromBottom <= LOG_FOLLOW_THRESHOLD_PX
+    if (followLogs !== atBottom) {
+      setFollowLogs(atBottom)
+    }
+  }, [followLogs])
+
+  const jumpToLatestLogs = useCallback(() => {
+    const node = logsRef.current
+    if (!node) return
+    node.scrollTop = node.scrollHeight
+    setFollowLogs(true)
+  }, [])
+
   const handleRun = async () => {
     const trimmedPrompt = prompt.trim()
     if (!trimmedPrompt || busy) return
@@ -206,9 +305,16 @@ export default function AIPane({
       setBusy(true)
       setPaneState('thinking')
       try {
+        let context = activeFileContent || ''
+        if (includeAllTabs && openTabs.length > 1) {
+          context = openTabs
+            .filter((tab) => tab.content.trim())
+            .map((tab) => `// File: ${tab.filePath || tab.name}\n${tab.content}`)
+            .join('\n\n---\n\n')
+        }
         const result = await window.electronAPI.generateCode({
           prompt: trimmedPrompt,
-          context: activeFileContent || '',
+          context,
           provider,
           model,
           mode: 'coding',
@@ -227,8 +333,23 @@ export default function AIPane({
         setCodingResponses((prev) => [response, ...prev].slice(0, 8))
         const code = extractPrimaryCode(parsed.visibleText)
         if (code) {
-          onApplyToEditor(code)
-          onNotify?.('Applied coding output to editor.', 'success')
+          // Check if the output is a unified diff
+          if (isDiff(code) && activeFileContent) {
+            const patched = applyUnifiedDiff(activeFileContent, code)
+            if (patched !== null) {
+              onApplyToEditor(patched)
+              onNotify?.('Applied diff patch to editor.', 'success')
+            } else {
+              onApplyToEditor(code)
+              onNotify?.('Diff could not be applied cleanly; replaced content.', 'warning')
+            }
+          } else if (insertMode === 'cursor' && onInsertAtCursor) {
+            onInsertAtCursor(code)
+            onNotify?.('Inserted at cursor position.', 'success')
+          } else {
+            onApplyToEditor(code)
+            onNotify?.('Applied coding output to editor.', 'success')
+          }
         }
         setPaneState('done')
         setPrompt('')
@@ -295,28 +416,19 @@ export default function AIPane({
     }
   }
 
-  if (collapsed) {
-    return (
-      <div
-        className="ai-pane ai-pane-collapsed"
-        ref={(node) => {
-          paneRef.current = node
-        }}
-      >
-        <button className="ai-pane-collapse-btn" onClick={() => setCollapsed(false)} title="Expand AI Pane">
-          {'<'}
-        </button>
-      </div>
-    )
-  }
-
   return (
     <aside
-      className="ai-pane"
+      className={`ai-pane ${collapsed ? 'ai-pane-collapsed' : ''}`}
       ref={(node) => {
         paneRef.current = node
       }}
     >
+      {collapsed ? (
+        <button className="ai-pane-collapse-btn" onClick={() => setCollapsed(false)} title="Expand AI Pane">
+          {'<'}
+        </button>
+      ) : (
+        <>
       <div className="ai-pane-header">
         <div className="ai-pane-title-wrap">
           <h3>AI Assistant</h3>
@@ -347,7 +459,23 @@ export default function AIPane({
               {runtimeDiagnostics.activeRequests.map((request) => (
                 <div key={request.id} className="ai-runtime-request-line">
                   <span>{request.provider}/{request.model}</span>
-                  <span>{request.kind}</span>
+                  <span className="ai-runtime-kind">{request.kind}</span>
+                  <span className={`ai-runtime-phase ${request.phase}`}>{request.phase}</span>
+                  <span className="ai-runtime-elapsed">
+                    {formatDurationMs(Math.max(request.elapsedMs, liveNow - new Date(request.startedAt).getTime()))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {runtimeDiagnostics && runtimeDiagnostics.recentRequests.length > 0 && (
+            <div className="ai-runtime-recent">
+              {[...runtimeDiagnostics.recentRequests].slice(0, 6).map((request) => (
+                <div key={request.id} className="ai-runtime-recent-line">
+                  <span className="ai-runtime-recent-id">{request.kind}</span>
+                  <span>{request.provider}/{request.model}</span>
+                  <span className={`ai-runtime-outcome ${request.outcome}`}>{request.outcome}</span>
+                  <span>{formatDurationMs(request.durationMs)}</span>
                 </div>
               ))}
             </div>
@@ -412,14 +540,53 @@ export default function AIPane({
             <div className="ai-pane-filewrites">
               {[...activeTask.fileWrites].reverse().slice(0, 40).map((write) => (
                 <div key={write.id} className="ai-write-card">
-                  <div className="ai-write-meta">
-                    <span>{write.path}</span>
-                    <span>{formatTime(write.timestamp)}</span>
-                  </div>
-                  <div className="ai-write-bytes">
-                    delta {write.bytesChanged >= 0 ? '+' : ''}{write.bytesChanged} bytes
-                  </div>
-                  <pre>{write.preview}</pre>
+                  {(() => {
+                    const expanded = !!expandedWriteIds[write.id]
+                    const allLines = write.diff?.lines?.length ? write.diff.lines : fallbackDiffLines(write.preview)
+                    const visibleLines = expanded ? allLines : allLines.slice(0, COLLAPSED_DIFF_LINES)
+                    const hiddenFromCollapse = Math.max(0, allLines.length - visibleLines.length)
+                    const hiddenTotal = write.diff?.truncated
+                      ? hiddenFromCollapse + (write.diff.hiddenLineCount || 0)
+                      : hiddenFromCollapse
+                    const hasMore = hiddenTotal > 0
+                    const addedCount = write.diff?.added ?? allLines.filter((line) => line.kind === 'add').length
+                    const removedCount = write.diff?.removed ?? allLines.filter((line) => line.kind === 'remove').length
+                    return (
+                      <>
+                        <div className="ai-write-meta">
+                          <span className="ai-write-path" title={write.path}>{truncateMiddle(write.path)}</span>
+                          <span>{formatTime(write.timestamp)}</span>
+                        </div>
+                        <div className="ai-write-bytes">
+                          delta {write.bytesChanged >= 0 ? '+' : ''}{write.bytesChanged} bytes
+                        </div>
+                        <div className="ai-diff-summary">
+                          <span className="add">+{addedCount}</span>
+                          <span className="remove">-{removedCount}</span>
+                        </div>
+                        <div className="ai-diff-body">
+                          {visibleLines.length === 0 && (
+                            <div className="ai-pane-empty">No line-level changes.</div>
+                          )}
+                          {visibleLines.map((line, idx) => (
+                            <div key={`${write.id}-${idx}`} className={`ai-diff-line ${lineKindClass(line.kind)}`}>
+                              <span className="line-no">{line.oldLine || line.newLine || ''}</span>
+                              <span className="marker">{line.kind === 'add' ? '+' : (line.kind === 'remove' ? '-' : ' ')}</span>
+                              <span className="text">{line.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {hasMore && (
+                          <button
+                            className="ai-pane-link-btn ai-diff-toggle"
+                            onClick={() => setExpandedWriteIds((prev) => ({ ...prev, [write.id]: !expanded }))}
+                          >
+                            {expanded ? 'Show less' : `Show more (${hiddenTotal})`}
+                          </button>
+                        )}
+                      </>
+                    )
+                  })()}
                 </div>
               ))}
             </div>
@@ -457,6 +624,25 @@ export default function AIPane({
                   </div>
                 )}
                 <pre>{response.text}</pre>
+                {workspaceRootPath && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                    <button
+                      className="ai-pane-link-btn"
+                      onClick={async () => {
+                        const fileName = prompt('Save as file name:', 'new-file.ts')
+                        if (!fileName?.trim()) return
+                        const ok = await window.electronAPI.createWorkspaceFileFromAI(
+                          workspaceRootPath,
+                          fileName.trim(),
+                          response.text
+                        )
+                        onNotify?.(ok ? `Created "${fileName.trim()}"` : 'Failed to create file', ok ? 'success' : 'error')
+                      }}
+                    >
+                      Save as New File
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </section>
@@ -466,12 +652,25 @@ export default function AIPane({
           <section className="ai-pane-section ai-pane-log-section">
             <div className="ai-pane-section-header">
               <strong>Logs</strong>
+              <div className="ai-log-controls">
+                <button
+                  className="ai-pane-link-btn"
+                  onClick={() => setFollowLogs((value) => !value)}
+                >
+                  {followLogs ? 'Pause follow' : 'Follow latest'}
+                </button>
+                {!followLogs && (
+                  <button className="ai-pane-link-btn" onClick={jumpToLatestLogs}>
+                    Jump to latest
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="ai-pane-logs">
+            <div className="ai-pane-logs" ref={logsRef} onScroll={handleLogScroll}>
               {activeTask.logs.length === 0 && (
                 <div className="ai-pane-empty">No logs yet.</div>
               )}
-              {[...activeTask.logs].slice(-400).map((log) => (
+              {[...activeTask.logs].slice(-MAX_VISIBLE_LOGS).map((log) => (
                 <div key={log.id} className={`ai-log-line ${log.level}`}>
                   <span className="ts">{formatTime(log.timestamp)}</span>
                   <pre className="msg">{log.message}</pre>
@@ -496,6 +695,7 @@ export default function AIPane({
             onChange={(e) => onSaveSettings({ ...settings, codingProvider: e.target.value as any })}
           >
             <option value="ollama">Ollama</option>
+            <option value="llamacpp">llama.cpp</option>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="google">Google</option>
@@ -520,6 +720,28 @@ export default function AIPane({
           <span>Auto-run Plan - Approve - Build - Test</span>
         </label>
 
+        {onInsertAtCursor && (
+          <label className="ai-pane-toggle">
+            <input
+              type="checkbox"
+              checked={insertMode === 'cursor'}
+              onChange={(e) => setInsertMode(e.target.checked ? 'cursor' : 'replace')}
+            />
+            <span>Insert at cursor (instead of replace file)</span>
+          </label>
+        )}
+
+        {openTabs.length > 1 && (
+          <label className="ai-pane-toggle">
+            <input
+              type="checkbox"
+              checked={includeAllTabs}
+              onChange={(e) => setIncludeAllTabs(e.target.checked)}
+            />
+            <span>Include all open files as context ({openTabs.length} files)</span>
+          </label>
+        )}
+
         <div className="ai-pane-input-wrap">
           <textarea
             className="ai-pane-input"
@@ -538,6 +760,8 @@ export default function AIPane({
           </button>
         </div>
       </div>
+        </>
+      )}
     </aside>
   )
 }

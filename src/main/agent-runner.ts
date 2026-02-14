@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID as uuidv4 } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as store from './store'
@@ -39,6 +39,7 @@ export interface AgentFileWrite {
   bytesAfter: number
   bytesChanged: number
   preview: string
+  diff?: AgentDiffPreview
 }
 
 export interface AgentTestRun {
@@ -90,9 +91,27 @@ export interface AgentEvent {
     | 'task_completed'
     | 'task_failed'
     | 'task_cancelled'
+    | 'contract_violation'
     | 'log'
   message?: string
   data?: Record<string, any>
+}
+
+export type AgentDiffKind = 'add' | 'remove' | 'context'
+
+export interface AgentDiffLine {
+  kind: AgentDiffKind
+  text: string
+  oldLine?: number
+  newLine?: number
+}
+
+export interface AgentDiffPreview {
+  lines: AgentDiffLine[]
+  added: number
+  removed: number
+  truncated: boolean
+  hiddenLineCount: number
 }
 
 const activeTasks = new Map<string, AgentTask>()
@@ -100,6 +119,54 @@ const runningCommands = new Map<string, ChildProcess>()
 const runningModelRequests = new Map<string, AbortController>()
 const MAX_LOG_ENTRIES = 600
 const MAX_FILE_WRITES = 200
+const MAX_DIFF_LINES = 80
+
+interface AgentSafetyPolicy {
+  maxActions: number
+  maxFileWrites: number
+  maxCommands: number
+  maxBytesWritten: number
+  maxContractViolations: number
+  maxCommandTimeoutMs: number
+  commandKillGraceMs: number
+  maxViolationRetriesPerStep: number
+}
+
+interface AgentExecutionBudget {
+  actions: number
+  fileWrites: number
+  commands: number
+  bytesWritten: number
+  contractViolations: number
+}
+
+type AgentActionType = 'write_file' | 'run_command' | 'skip'
+type ContractViolationCode = 'invalid_json' | 'invalid_action' | 'missing_field' | 'empty_command' | 'path_escape'
+
+interface ContractViolation {
+  code: ContractViolationCode
+  message: string
+  rawText: string
+}
+
+type ParsedActionResult =
+  | {
+    ok: true
+    action: {
+      action: AgentActionType
+      path?: string
+      content?: string
+      command?: string
+    }
+  }
+  | {
+    ok: false
+    violation: ContractViolation
+  }
+
+type ParsedBatchResult =
+  | { ok: true; actions: Array<{ action: AgentActionType; path?: string; content?: string; command?: string }> }
+  | { ok: false; violation: ContractViolation }
 
 interface AgentPermissions {
   allowTerminal: boolean
@@ -117,6 +184,37 @@ function resolveAgentPermissions(settings: store.Settings): AgentPermissions {
     allowTerminal: perms.allowTerminal !== false,
     allowFileWrite: perms.allowFileWrite !== false,
     allowAICodeExec: perms.allowAICodeExec === true,
+  }
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  if (value < min) return min
+  if (value > max) return max
+  return Math.floor(value)
+}
+
+function resolveAgentSafetyPolicy(settings: store.Settings): AgentSafetyPolicy {
+  const raw = settings.agentSafety || {
+    maxActions: 120,
+    maxFileWrites: 80,
+    maxCommands: 24,
+    maxBytesWritten: 1_000_000,
+    maxContractViolations: 12,
+    maxCommandTimeoutMs: 120_000,
+    commandKillGraceMs: 2_000,
+    maxViolationRetriesPerStep: 2,
+  }
+
+  return {
+    maxActions: clampNumber(raw.maxActions, 1, 1_000),
+    maxFileWrites: clampNumber(raw.maxFileWrites, 1, 500),
+    maxCommands: clampNumber(raw.maxCommands, 0, 300),
+    maxBytesWritten: clampNumber(raw.maxBytesWritten, 1_024, 25_000_000),
+    maxContractViolations: clampNumber(raw.maxContractViolations, 1, 200),
+    maxCommandTimeoutMs: clampNumber(raw.maxCommandTimeoutMs, 5_000, 1_200_000),
+    commandKillGraceMs: clampNumber(raw.commandKillGraceMs, 250, 30_000),
+    maxViolationRetriesPerStep: clampNumber(raw.maxViolationRetriesPerStep, 0, 12),
   }
 }
 
@@ -242,31 +340,90 @@ function buildFallbackPlan(rawText: string): { planSummary: string; steps: Array
   }
 }
 
-function getDiffPreview(before: string, after: string): string {
+function getDiffPreview(before: string, after: string): { preview: string; diff: AgentDiffPreview } {
   const beforeLines = before.split(/\r?\n/)
   const afterLines = after.split(/\r?\n/)
   const maxLines = Math.max(beforeLines.length, afterLines.length)
-  const changed: string[] = []
-  const limit = 12
+  const candidateLines: AgentDiffLine[] = []
+  const dedupe = new Set<string>()
+  let added = 0
+  let removed = 0
+
+  const pushLine = (line: AgentDiffLine) => {
+    const key = `${line.kind}:${line.oldLine || ''}:${line.newLine || ''}:${line.text}`
+    if (dedupe.has(key)) return
+    dedupe.add(key)
+    candidateLines.push(line)
+  }
 
   for (let i = 0; i < maxLines; i++) {
-    const left = beforeLines[i] ?? ''
-    const right = afterLines[i] ?? ''
+    const hasBefore = i < beforeLines.length
+    const hasAfter = i < afterLines.length
+    const left = hasBefore ? beforeLines[i] : ''
+    const right = hasAfter ? afterLines[i] : ''
     if (left === right) continue
-    changed.push(`L${i + 1} - ${left}`)
-    changed.push(`L${i + 1} + ${right}`)
-    if (changed.length >= limit) break
+
+    if (i > 0) {
+      const prevLeft = beforeLines[i - 1] ?? ''
+      const prevRight = afterLines[i - 1] ?? ''
+      if (prevLeft === prevRight) {
+        pushLine({ kind: 'context', text: prevLeft, oldLine: i, newLine: i })
+      }
+    }
+
+    if (hasBefore) {
+      removed += 1
+      pushLine({ kind: 'remove', text: left, oldLine: i + 1 })
+    }
+    if (hasAfter) {
+      added += 1
+      pushLine({ kind: 'add', text: right, newLine: i + 1 })
+    }
+
+    if (i + 1 < maxLines) {
+      const nextLeft = beforeLines[i + 1] ?? ''
+      const nextRight = afterLines[i + 1] ?? ''
+      if (nextLeft === nextRight) {
+        pushLine({ kind: 'context', text: nextLeft, oldLine: i + 2, newLine: i + 2 })
+      }
+    }
   }
 
-  if (changed.length === 0) {
-    return 'No line-level text changes detected.'
+  if (candidateLines.length === 0) {
+    return {
+      preview: 'No line-level text changes detected.',
+      diff: {
+        lines: [],
+        added: 0,
+        removed: 0,
+        truncated: false,
+        hiddenLineCount: 0,
+      },
+    }
   }
 
-  if (changed.length >= limit && maxLines > limit / 2) {
-    changed.push('...')
+  const truncated = candidateLines.length > MAX_DIFF_LINES
+  const visibleLines = truncated ? candidateLines.slice(0, MAX_DIFF_LINES) : candidateLines
+  const hiddenLineCount = truncated ? candidateLines.length - visibleLines.length : 0
+  const preview = visibleLines.map((line) => {
+    const marker = line.kind === 'add' ? '+' : (line.kind === 'remove' ? '-' : ' ')
+    const lineRef = line.oldLine || line.newLine || 0
+    return `L${lineRef} ${marker} ${line.text}`
+  })
+  if (truncated) {
+    preview.push(`... (${hiddenLineCount} more diff lines)`)
   }
 
-  return changed.join('\n')
+  return {
+    preview: preview.join('\n'),
+    diff: {
+      lines: visibleLines,
+      added,
+      removed,
+      truncated,
+      hiddenLineCount,
+    },
+  }
 }
 
 function resolveWorkspaceWritePath(workspaceRoot: string, requestedPath: string): string {
@@ -278,32 +435,132 @@ function resolveWorkspaceWritePath(workspaceRoot: string, requestedPath: string)
   return target
 }
 
-function parseAction(rawText: string): {
-  action: 'write_file' | 'run_command' | 'skip'
-  path?: string
-  content?: string
-  command?: string
-} {
+function parseAction(rawText: string, workspaceRoot: string): ParsedActionResult {
   const parsed = parseJsonBlock(rawText)
   if (!parsed || typeof parsed !== 'object') {
-    return { action: 'skip' }
+    return {
+      ok: false,
+      violation: {
+        code: 'invalid_json',
+        message: 'Model output was not valid JSON action payload.',
+        rawText,
+      },
+    }
   }
 
   const action = parsed.action
   if (action === 'write_file') {
+    if (typeof parsed.path !== 'string') {
+      return {
+        ok: false,
+        violation: {
+          code: 'missing_field',
+          message: 'write_file action is missing a valid "path" string.',
+          rawText,
+        },
+      }
+    }
+    if (typeof parsed.content !== 'string') {
+      return {
+        ok: false,
+        violation: {
+          code: 'missing_field',
+          message: 'write_file action is missing a valid "content" string.',
+          rawText,
+        },
+      }
+    }
+
+    try {
+      resolveWorkspaceWritePath(workspaceRoot, parsed.path)
+    } catch {
+      return {
+        ok: false,
+        violation: {
+          code: 'path_escape',
+          message: 'write_file path attempted to escape workspace root.',
+          rawText,
+        },
+      }
+    }
+
     return {
-      action: 'write_file',
-      path: typeof parsed.path === 'string' ? parsed.path : '',
-      content: typeof parsed.content === 'string' ? parsed.content : '',
+      ok: true,
+      action: {
+        action: 'write_file',
+        path: parsed.path,
+        content: parsed.content,
+      },
     }
   }
   if (action === 'run_command') {
+    if (typeof parsed.command !== 'string') {
+      return {
+        ok: false,
+        violation: {
+          code: 'missing_field',
+          message: 'run_command action is missing a valid "command" string.',
+          rawText,
+        },
+      }
+    }
+    if (!parsed.command.trim()) {
+      return {
+        ok: false,
+        violation: {
+          code: 'empty_command',
+          message: 'run_command action returned an empty command.',
+          rawText,
+        },
+      }
+    }
     return {
-      action: 'run_command',
-      command: typeof parsed.command === 'string' ? parsed.command : '',
+      ok: true,
+      action: {
+        action: 'run_command',
+        command: parsed.command,
+      },
     }
   }
-  return { action: 'skip' }
+  if (action === 'skip') {
+    return { ok: true, action: { action: 'skip' } }
+  }
+  return {
+    ok: false,
+    violation: {
+      code: 'invalid_action',
+      message: `Unsupported action "${String(action)}".`,
+      rawText,
+    },
+  }
+}
+
+function singleToBatch(single: ParsedActionResult): ParsedBatchResult {
+  if (single.ok === true) return { ok: true, actions: [single.action] }
+  return { ok: false, violation: single.violation }
+}
+
+function parseBatchActions(rawText: string, workspaceRoot: string): ParsedBatchResult {
+  const parsed = parseJsonBlock(rawText)
+  if (!parsed || typeof parsed !== 'object') {
+    // Fall back to single action
+    return singleToBatch(parseAction(rawText, workspaceRoot))
+  }
+
+  // Check for batch format: {"actions": [...]}
+  if (Array.isArray(parsed.actions)) {
+    const actions: Array<{ action: AgentActionType; path?: string; content?: string; command?: string }> = []
+    for (const item of parsed.actions) {
+      const wrapped = JSON.stringify(item)
+      const result = parseAction(wrapped, workspaceRoot)
+      if (result.ok === false) return { ok: false, violation: result.violation }
+      actions.push(result.action)
+    }
+    return { ok: true, actions }
+  }
+
+  // Single action format
+  return singleToBatch(parseAction(rawText, workspaceRoot))
 }
 
 function writeWorkspaceFile(task: AgentTask, relativePath: string, content: string): AgentFileWrite {
@@ -319,6 +576,7 @@ function writeWorkspaceFile(task: AgentTask, relativePath: string, content: stri
 
   fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
   fs.writeFileSync(absolutePath, content, 'utf-8')
+  const diffPreview = getDiffPreview(before, content)
 
   const write: AgentFileWrite = {
     id: uuidv4(),
@@ -327,7 +585,8 @@ function writeWorkspaceFile(task: AgentTask, relativePath: string, content: stri
     bytesBefore,
     bytesAfter,
     bytesChanged: bytesAfter - bytesBefore,
-    preview: getDiffPreview(before, content),
+    preview: diffPreview.preview,
+    diff: diffPreview.diff,
   }
 
   task.fileWrites.push(write)
@@ -358,7 +617,9 @@ function readPackageTestScript(workspaceRoot: string): string | null {
 async function runCommand(
   task: AgentTask,
   command: string,
-  cwd: string
+  cwd: string,
+  timeoutMs: number,
+  killGraceMs: number
 ): Promise<AgentTestRun> {
   const startedAt = nowIso()
   emitEvent(task, 'test_command_start', `Running: ${command}`, { command })
@@ -366,6 +627,9 @@ async function runCommand(
 
   return new Promise<AgentTestRun>((resolve, reject) => {
     let output = ''
+    let forceKillTimer: NodeJS.Timeout | null = null
+    let timedOut = false
+    let closed = false
     const child = spawn(command, {
       cwd,
       shell: true,
@@ -379,6 +643,10 @@ async function runCommand(
       output += text
       emitEvent(task, 'test_output', undefined, { command, stream: 'stdout', text })
       appendLog(task, text, 'stdout')
+      // Broadcast to terminal pane for visibility
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('agent:terminalOutput', { text, stream: 'stdout' })
+      }
     })
 
     child.stderr?.on('data', (chunk: Buffer | string) => {
@@ -386,17 +654,50 @@ async function runCommand(
       output += text
       emitEvent(task, 'test_output', undefined, { command, stream: 'stderr', text })
       appendLog(task, text, 'stderr')
+      // Broadcast to terminal pane for visibility
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('agent:terminalOutput', { text, stream: 'stderr' })
+      }
     })
 
+    const timeoutHandle = setTimeout(() => {
+      if (closed) return
+      timedOut = true
+      appendLog(task, `Command timed out after ${timeoutMs}ms: ${command}`, 'error')
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        // Ignore termination errors from already-exited processes.
+      }
+
+      forceKillTimer = setTimeout(() => {
+        if (closed) return
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          // Ignore force-kill errors from already-exited processes.
+        }
+      }, killGraceMs)
+    }, timeoutMs)
+
     child.on('error', (error) => {
+      closed = true
+      clearTimeout(timeoutHandle)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
       runningCommands.delete(task.id)
       reject(error)
     })
 
     child.on('close', (code) => {
+      closed = true
+      clearTimeout(timeoutHandle)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
       runningCommands.delete(task.id)
       const finishedAt = nowIso()
-      const exitCode = code ?? 1
+      const exitCode = timedOut ? 124 : (code ?? 1)
+      if (timedOut) {
+        output += `\n[Process timed out after ${timeoutMs}ms]`
+      }
       const run: AgentTestRun = {
         id: uuidv4(),
         command,
@@ -421,6 +722,36 @@ function failTask(task: AgentTask, error: unknown, prefix: string) {
   appendLog(task, task.lastError, 'error')
   emitEvent(task, 'task_failed', task.lastError)
   broadcastUpdate()
+}
+
+function emitContractViolation(
+  task: AgentTask,
+  violation: ContractViolation,
+  stepIndex: number,
+  budget: AgentExecutionBudget,
+  policy: AgentSafetyPolicy
+): void {
+  budget.contractViolations += 1
+  const message = `Contract violation (${violation.code}) at step ${stepIndex + 1}: ${violation.message}`
+  appendLog(task, message, 'error')
+  emitEvent(task, 'contract_violation', message, {
+    stepIndex,
+    violation,
+    budget: {
+      contractViolations: budget.contractViolations,
+      maxContractViolations: policy.maxContractViolations,
+    },
+  })
+}
+
+function enforceActionBudget(
+  budget: AgentExecutionBudget,
+  policy: AgentSafetyPolicy,
+  actionLabel: string
+): void {
+  if (budget.actions + 1 > policy.maxActions) {
+    throw new Error(`Safety policy blocked ${actionLabel}: max actions (${policy.maxActions}) exceeded.`)
+  }
 }
 
 export function listAgentTasks(): AgentTask[] {
@@ -491,14 +822,10 @@ export async function approveAgentTask(taskId: string, workspaceRootPath?: strin
     task.workspaceRootPath = resolved
   }
 
-  if (!task.workspaceRootPath && task.mode === 'plan') {
+  if (!task.workspaceRootPath) {
     const autoWorkspace = createAutoWorkspaceProject(task.goal)
     task.workspaceRootPath = path.resolve(autoWorkspace)
     appendLog(task, `Auto-created workspace project: ${task.workspaceRootPath}`)
-  }
-
-  if (task.mode !== 'plan' && !task.workspaceRootPath) {
-    throw new Error('Open a project first.')
   }
 
   task.status = 'approved'
@@ -566,21 +893,35 @@ async function planAgentTask(taskId: string): Promise<void> {
     '}',
   ].join('\n')
 
-  const plannerController = new AbortController()
-  runningModelRequests.set(task.id, plannerController)
-  let result: { text: string | null; error?: string }
-  try {
-    result = await generateCodeWithProvider(
-      settings,
-      prompt,
-      '',
-      undefined,
-      undefined,
-      'plan',
-      plannerController.signal
-    )
-  } finally {
-    runningModelRequests.delete(task.id)
+  let result: { text: string | null; error?: string } = { text: null }
+  const MAX_PLAN_RETRIES = 2
+  for (let planRetry = 0; planRetry <= MAX_PLAN_RETRIES; planRetry++) {
+    const plannerController = new AbortController()
+    runningModelRequests.set(task.id, plannerController)
+    try {
+      result = await generateCodeWithProvider(
+        settings,
+        prompt,
+        '',
+        undefined,
+        undefined,
+        'plan',
+        plannerController.signal
+      )
+      break
+    } catch (fetchErr: any) {
+      runningModelRequests.delete(task.id)
+      const isTimeout = fetchErr?.name === 'TimeoutError' || fetchErr?.name === 'AbortError'
+      const isNetworkErr = fetchErr?.code === 'ECONNREFUSED' || fetchErr?.code === 'ECONNRESET' || fetchErr?.message?.includes('fetch failed')
+      if ((isTimeout || isNetworkErr) && planRetry < MAX_PLAN_RETRIES) {
+        appendLog(task, `Planner request failed (${fetchErr.message}), retrying (${planRetry + 1}/${MAX_PLAN_RETRIES})...`, 'error')
+        await new Promise(r => setTimeout(r, 3000 * (planRetry + 1)))
+        continue
+      }
+      throw fetchErr
+    } finally {
+      runningModelRequests.delete(task.id)
+    }
   }
 
   if (!result.text) {
@@ -662,6 +1003,14 @@ async function runAgentTask(taskId: string): Promise<void> {
 
   const settings = store.getSettings()
   const permissions = resolveAgentPermissions(settings)
+  const safetyPolicy = resolveAgentSafetyPolicy(settings)
+  const budget: AgentExecutionBudget = {
+    actions: 0,
+    fileWrites: 0,
+    commands: 0,
+    bytesWritten: 0,
+    contractViolations: 0,
+  }
 
   for (let i = task.currentStepIndex; i < task.steps.length; i++) {
     if (task.cancelRequested) {
@@ -684,70 +1033,150 @@ async function runAgentTask(taskId: string): Promise<void> {
     broadcastUpdate()
 
     try {
-      setTaskPhase(task, 'thinking')
-      const stepPrompt = [
+      const baseStepPrompt = [
         `Task goal: ${task.goal}`,
         `Workspace root: ${workspaceRoot}`,
         `Current step: ${step.description}`,
         '',
-        'Return ONLY JSON:',
-        '{',
-        '  "action": "write_file" | "run_command" | "skip",',
-        '  "path": "relative/path/from/workspace/root",',
-        '  "content": "file content when writing",',
-        '  "command": "command when run_command"',
-        '}',
+        'Return ONLY JSON (single or batch):',
+        'Single: { "action": "write_file" | "run_command" | "skip", "path": "...", "content": "...", "command": "..." }',
+        'Batch: { "actions": [{ "action": "write_file", "path": "...", "content": "..." }, ...] }',
       ].join('\n')
 
-      const stepController = new AbortController()
-      runningModelRequests.set(task.id, stepController)
-      let result: { text: string | null; error?: string }
-      try {
-        result = await generateCodeWithProvider(
-          settings,
-          stepPrompt,
-          '',
-          undefined,
-          undefined,
-          task.mode === 'bugfix' ? 'bugfix' : 'build',
-          stepController.signal
-        )
-      } finally {
-        runningModelRequests.delete(task.id)
+      let parsedActions: Array<{ action: AgentActionType; path?: string; content?: string; command?: string }> | null = null
+      let lastViolation: ContractViolation | null = null
+
+      for (let attempt = 0; attempt <= safetyPolicy.maxViolationRetriesPerStep; attempt++) {
+        if (task.cancelRequested) {
+          task.status = 'cancelled'
+          task.phase = 'done'
+          emitEvent(task, 'task_cancelled', 'Task cancelled during step execution.')
+          broadcastUpdate()
+          return
+        }
+
+        setTaskPhase(task, 'thinking')
+        const violationHint = lastViolation
+          ? `\n\nPrevious output was invalid (${lastViolation.code}): ${lastViolation.message}\nReturn corrected JSON only.`
+          : ''
+        const stepPrompt = `${baseStepPrompt}${violationHint}`
+
+        let result: { text: string | null; error?: string } = { text: null }
+        const MAX_MODEL_RETRIES = 2
+        for (let modelRetry = 0; modelRetry <= MAX_MODEL_RETRIES; modelRetry++) {
+          const stepController = new AbortController()
+          runningModelRequests.set(task.id, stepController)
+          try {
+            result = await generateCodeWithProvider(
+              settings,
+              stepPrompt,
+              '',
+              undefined,
+              undefined,
+              task.mode === 'bugfix' ? 'bugfix' : 'build',
+              stepController.signal
+            )
+            break // success
+          } catch (fetchErr: any) {
+            runningModelRequests.delete(task.id)
+            const isTimeout = fetchErr?.name === 'TimeoutError' || fetchErr?.name === 'AbortError'
+            const isNetworkErr = fetchErr?.code === 'ECONNREFUSED' || fetchErr?.code === 'ECONNRESET' || fetchErr?.message?.includes('fetch failed')
+            if ((isTimeout || isNetworkErr) && modelRetry < MAX_MODEL_RETRIES) {
+              appendLog(task, `Model request failed (${fetchErr.message}), retrying (${modelRetry + 1}/${MAX_MODEL_RETRIES})...`, 'error')
+              await new Promise(r => setTimeout(r, 3000 * (modelRetry + 1)))
+              continue
+            }
+            throw fetchErr
+          } finally {
+            runningModelRequests.delete(task.id)
+          }
+        }
+
+        if (!result.text) {
+          throw new Error(result.error || 'Empty step output.')
+        }
+
+        const batchResult = parseBatchActions(result.text, workspaceRoot)
+        if (batchResult.ok === true) {
+          parsedActions = batchResult.actions
+          break
+        }
+
+        lastViolation = batchResult.violation
+        emitContractViolation(task, batchResult.violation, i, budget, safetyPolicy)
+        if (budget.contractViolations > safetyPolicy.maxContractViolations) {
+          throw new Error(`Safety policy blocked execution: max contract violations (${safetyPolicy.maxContractViolations}) exceeded.`)
+        }
+
+        if (attempt >= safetyPolicy.maxViolationRetriesPerStep) {
+          throw new Error(`Model returned invalid action payload after ${attempt + 1} attempts.`)
+        }
       }
 
-      if (!result.text) {
-        throw new Error(result.error || 'Empty step output.')
+      if (!parsedActions || parsedActions.length === 0) {
+        throw new Error('Failed to parse a valid action payload.')
       }
 
       setTaskPhase(task, 'writing')
-      const action = parseAction(result.text)
+      const stepResults: string[] = []
 
-      if (action.action === 'write_file') {
-        if (!permissions.allowFileWrite) {
-          throw new Error('Agent file writes are disabled. Enable "Allow agent file writes" in Settings.')
+      for (const action of parsedActions) {
+        if (action.action === 'write_file') {
+          if (!permissions.allowFileWrite) {
+            throw new Error('Agent file writes are disabled. Enable "Allow agent file writes" in Settings.')
+          }
+          if (!action.path || typeof action.content !== 'string') {
+            throw new Error('Invalid write_file payload from model.')
+          }
+
+          enforceActionBudget(budget, safetyPolicy, 'write_file')
+          if (budget.fileWrites + 1 > safetyPolicy.maxFileWrites) {
+            throw new Error(`Safety policy blocked write_file: max file writes (${safetyPolicy.maxFileWrites}) exceeded.`)
+          }
+          const writeBytes = Buffer.byteLength(action.content, 'utf-8')
+          if (budget.bytesWritten + writeBytes > safetyPolicy.maxBytesWritten) {
+            throw new Error(`Safety policy blocked write_file: max written bytes (${safetyPolicy.maxBytesWritten}) exceeded.`)
+          }
+
+          writeWorkspaceFile(task, action.path, action.content)
+          budget.actions += 1
+          budget.fileWrites += 1
+          budget.bytesWritten += writeBytes
+          stepResults.push(`Wrote ${action.path}`)
+        } else if (action.action === 'run_command') {
+          const command = action.command?.trim() || '(empty command)'
+          if (!permissions.allowTerminal) {
+            throw new Error('Agent command execution is disabled. Enable "Allow agent to run commands" in Settings.')
+          }
+          enforceActionBudget(budget, safetyPolicy, 'run_command')
+          if (budget.commands + 1 > safetyPolicy.maxCommands) {
+            throw new Error(`Safety policy blocked run_command: max commands (${safetyPolicy.maxCommands}) exceeded.`)
+          }
+
+          const run = await runCommand(
+            task,
+            command,
+            workspaceRoot,
+            safetyPolicy.maxCommandTimeoutMs,
+            safetyPolicy.commandKillGraceMs
+          )
+          task.testRuns.push(run)
+          budget.actions += 1
+          budget.commands += 1
+          if (!run.success) {
+            throw new Error(`Command failed: ${command} (exit ${run.exitCode})`)
+          }
+          stepResults.push(`Executed command: ${command}`)
+          appendLog(task, `Command executed successfully: ${command}`)
+        } else {
+          enforceActionBudget(budget, safetyPolicy, 'skip')
+          budget.actions += 1
+          stepResults.push('Skipped by model.')
+          appendLog(task, 'Step skipped by model output.')
         }
-        if (!action.path || typeof action.content !== 'string') {
-          throw new Error('Invalid write_file payload from model.')
-        }
-        writeWorkspaceFile(task, action.path, action.content)
-        step.result = `Wrote ${action.path}`
-      } else if (action.action === 'run_command') {
-        const command = action.command?.trim() || '(empty command)'
-        if (!permissions.allowTerminal) {
-          throw new Error('Agent command execution is disabled. Enable "Allow agent to run commands" in Settings.')
-        }
-        const run = await runCommand(task, command, workspaceRoot)
-        task.testRuns.push(run)
-        if (!run.success) {
-          throw new Error(`Command failed: ${command} (exit ${run.exitCode})`)
-        }
-        step.result = `Executed command: ${command}`
-        appendLog(task, `Command executed successfully: ${command}`)
-      } else {
-        step.result = 'Skipped by model.'
-        appendLog(task, 'Step skipped by model output.')
       }
+
+      step.result = stepResults.join('; ')
 
       step.status = 'completed'
       emitEvent(task, 'step_completed', `Step ${i + 1} completed.`, {
@@ -773,8 +1202,23 @@ async function runAgentTask(taskId: string): Promise<void> {
     appendLog(task, 'Testing phase started.')
     broadcastUpdate()
 
-    const commands = ['npm run build', 'npx tsc --noEmit']
-    if (readPackageTestScript(workspaceRoot)) {
+    const commands: string[] = []
+    const pkgPath = path.join(workspaceRoot, 'package.json')
+    let pkgJson: any = null
+    if (fs.existsSync(pkgPath)) {
+      try { pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) } catch { /* skip */ }
+    }
+    // Only run build if a build script exists
+    if (pkgJson?.scripts?.build) {
+      commands.push('npm run build')
+    }
+    // Only run tsc if tsconfig exists
+    if (fs.existsSync(path.join(workspaceRoot, 'tsconfig.json'))) {
+      commands.push('npx tsc --noEmit')
+    }
+    // Only run test if a test script exists and isn't the default placeholder
+    const testScript = pkgJson?.scripts?.test
+    if (typeof testScript === 'string' && testScript.trim() && !testScript.includes('no test specified')) {
       commands.push('npm test')
     }
 
@@ -787,8 +1231,21 @@ async function runAgentTask(taskId: string): Promise<void> {
         return
       }
 
-      const run = await runCommand(task, command, workspaceRoot)
+      enforceActionBudget(budget, safetyPolicy, 'test_command')
+      if (budget.commands + 1 > safetyPolicy.maxCommands) {
+        throw new Error(`Safety policy blocked test command: max commands (${safetyPolicy.maxCommands}) exceeded.`)
+      }
+
+      const run = await runCommand(
+        task,
+        command,
+        workspaceRoot,
+        safetyPolicy.maxCommandTimeoutMs,
+        safetyPolicy.commandKillGraceMs
+      )
       task.testRuns.push(run)
+      budget.actions += 1
+      budget.commands += 1
       if (!run.success) {
         throw new Error(`Test command failed: ${command} (exit ${run.exitCode})`)
       }

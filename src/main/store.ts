@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID as uuidv4 } from 'crypto'
 
 // --- Type Definitions ---
 
@@ -33,9 +33,23 @@ export interface Settings {
     allowFileWrite: boolean
     allowAICodeExec: boolean
   }
-  activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
-  codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
-  imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq'
+  agentSafety?: {
+    maxActions: number
+    maxFileWrites: number
+    maxCommands: number
+    maxBytesWritten: number
+    maxContractViolations: number
+    maxCommandTimeoutMs: number
+    commandKillGraceMs: number
+    maxViolationRetriesPerStep: number
+  }
+  activeProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
+  codingProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
+  imageProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'groq' | 'llamacpp'
+  llamacppEndpoint?: string
+  llamacppModelName?: string
+  llamacppBinaryPath?: string
+  llamacppModelPath?: string
   systemPrompts?: {
     chat: string
     coding: string
@@ -44,32 +58,55 @@ export interface Settings {
     bugfix: string
     image: string
   }
+  profilePicture?: string
+  darkMode?: boolean
 }
 
 // --- Default Settings ---
 
+const DEFAULT_PERMISSIONS: NonNullable<Settings['permissions']> = {
+  allowTerminal: true,
+  allowFileWrite: true,
+  allowAICodeExec: false,
+}
+
+const DEFAULT_AGENT_SAFETY: NonNullable<Settings['agentSafety']> = {
+  maxActions: 120,
+  maxFileWrites: 80,
+  maxCommands: 24,
+  maxBytesWritten: 1_000_000,
+  maxContractViolations: 12,
+  maxCommandTimeoutMs: 120_000,
+  commandKillGraceMs: 2_000,
+  maxViolationRetriesPerStep: 2,
+}
+
+const DEFAULT_SYSTEM_PROMPTS: NonNullable<Settings['systemPrompts']> = {
+  chat: 'You are a helpful AI assistant running locally in AI Agent IDE. You are NOT Claude, ChatGPT, or any cloud AI. You are a local AI model. Provide clear and direct answers. When asked what model you are, describe yourself as a local AI assistant.',
+  coding: 'You are a senior software engineer running as a local AI in AI Agent IDE. Return practical, correct code with minimal fluff.',
+  plan: 'You are a technical planner in AI Agent IDE. Break work into concrete executable steps and call out risks.',
+  build: 'You are a coding agent in build mode within AI Agent IDE. Implement requested changes completely and safely.',
+  bugfix: 'You are in bugfix mode within AI Agent IDE. Identify the root cause and provide the minimal robust fix.',
+  image: 'You generate image prompts optimized for clear, high-quality outputs.',
+}
+
 const DEFAULT_SETTINGS: Settings = {
   ollamaEndpoint: 'http://127.0.0.1:11434',
   modelName: 'glm-4.7-flash',
-  codingModel: 'glm-4.7-flash',
+  codingModel: 'qwen3-coder-30b',
   imageModel: '',
   numCtx: 8192,
   theme: 'glass',
-  codingProvider: 'ollama',
+  activeProvider: 'llamacpp',
+  codingProvider: 'llamacpp',
   imageProvider: 'ollama',
-  permissions: {
-    allowTerminal: true,
-    allowFileWrite: true,
-    allowAICodeExec: false,
-  },
-  systemPrompts: {
-    chat: 'You are a helpful AI assistant. Provide clear and direct answers.',
-    coding: 'You are a senior software engineer. Return practical, correct code with minimal fluff.',
-    plan: 'You are a technical planner. Break work into concrete executable steps and call out risks.',
-    build: 'You are a coding agent in build mode. Implement requested changes completely and safely.',
-    bugfix: 'You are in bugfix mode. Identify the root cause and provide the minimal robust fix.',
-    image: 'You generate image prompts optimized for clear, high-quality outputs.',
-  },
+  llamacppEndpoint: 'http://127.0.0.1:8080',
+  llamacppModelName: 'qwen3-coder-30b',
+  llamacppBinaryPath: 'C:\\Users\\hotre\\src\\llama.cpp\\build\\bin\\llama-server.exe',
+  llamacppModelPath: 'C:\\Users\\hotre\\.lmstudio\\models\\lmstudio-community\\Qwen3-Coder-30B-A3B-Instruct-GGUF\\Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf',
+  permissions: { ...DEFAULT_PERMISSIONS },
+  agentSafety: { ...DEFAULT_AGENT_SAFETY },
+  systemPrompts: { ...DEFAULT_SYSTEM_PROMPTS },
 }
 
 // --- Storage Paths ---
@@ -265,16 +302,53 @@ export function deleteMessage(conversationId: string, messageId: string): boolea
 export function getSettings(): Settings {
   ensureStorageExists()
   const settings = readJsonFile<Settings>(getSettingsFilePath(), DEFAULT_SETTINGS)
-  // Merge with defaults to ensure all keys exist (forward compatibility)
-  return { ...DEFAULT_SETTINGS, ...settings }
+  return mergeSettingsWithDefaults(settings)
 }
 
 export function setSettings(newSettings: Partial<Settings>): Settings {
   ensureStorageExists()
   const current = getSettings()
-  const updated = { ...current, ...newSettings }
+  const updated = mergeSettingsWithDefaults({
+    ...current,
+    ...newSettings,
+    permissions: {
+      ...DEFAULT_PERMISSIONS,
+      ...(current.permissions || {}),
+      ...(newSettings.permissions || {}),
+    },
+    agentSafety: {
+      ...DEFAULT_AGENT_SAFETY,
+      ...(current.agentSafety || {}),
+      ...(newSettings.agentSafety || {}),
+    },
+    systemPrompts: {
+      ...DEFAULT_SYSTEM_PROMPTS,
+      ...(current.systemPrompts || {}),
+      ...(newSettings.systemPrompts || {}),
+    },
+  })
   writeJsonFile(getSettingsFilePath(), updated)
   return updated
+}
+
+function mergeSettingsWithDefaults(settings: Partial<Settings> | null | undefined): Settings {
+  const incoming = settings || {}
+  return {
+    ...DEFAULT_SETTINGS,
+    ...incoming,
+    permissions: {
+      ...DEFAULT_PERMISSIONS,
+      ...(incoming.permissions || {}),
+    },
+    agentSafety: {
+      ...DEFAULT_AGENT_SAFETY,
+      ...(incoming.agentSafety || {}),
+    },
+    systemPrompts: {
+      ...DEFAULT_SYSTEM_PROMPTS,
+      ...(incoming.systemPrompts || {}),
+    },
+  }
 }
 
 // --- User Files Management ---
@@ -596,4 +670,37 @@ export function getUserFileInfo(fileName: string): UserFileInfo | null {
   } catch {
     return null
   }
+}
+
+// --- Session State ---
+
+export interface SessionState {
+  view: string
+  sidebarCollapsed: boolean
+  workspaceRootPath: string | null
+  showExplorer: boolean
+  showTerminal: boolean
+}
+
+const DEFAULT_SESSION_STATE: SessionState = {
+  view: 'chat',
+  sidebarCollapsed: false,
+  workspaceRootPath: null,
+  showExplorer: false,
+  showTerminal: true,
+}
+
+function getSessionStatePath(): string {
+  return path.join(getStorageDir(), 'session-state.json')
+}
+
+export function getSessionState(): SessionState {
+  ensureStorageExists()
+  return readJsonFile<SessionState>(getSessionStatePath(), DEFAULT_SESSION_STATE)
+}
+
+export function setSessionState(state: Partial<SessionState>): void {
+  ensureStorageExists()
+  const current = getSessionState()
+  writeJsonFile(getSessionStatePath(), { ...current, ...state })
 }
